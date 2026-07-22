@@ -1,9 +1,14 @@
 <!DOCTYPE html>
-<html lang="pt-BR" class="antialiased dark">
+<html lang="pt-BR" class="antialiased dark" style="color-scheme: dark;">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Assistente Financeiro</title>
+  
+  <!-- Configurações para PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0a0a0a">
+  <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3135/3135715.png">
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -13,14 +18,17 @@
   </script>
   
   <style>
-    body { -webkit-tap-highlight-color: transparent; }
+    body { 
+      -webkit-tap-highlight-color: transparent; 
+      background-color: #0a0a0a; /* Fundo escuro fixo */
+    }
     ::-webkit-scrollbar { display: none; }
     * { -ms-overflow-style: none; scrollbar-width: none; }
     .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
     
-    /* Força a visibilidade do texto de digitação ignorando o tema do celular */
-    input { color: #0f172a !important; color-scheme: light; }
-    .dark input { color: #f8fafc !important; color-scheme: dark; }
+    /* Garante visibilidade nos inputs em modo escuro */
+    input { color: #f8fafc !important; }
+    input::placeholder { color: #64748b !important; }
   </style>
 
   <script type="importmap">
@@ -43,27 +51,39 @@
   
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body class="bg-slate-50 dark:bg-neutral-950 text-slate-900 dark:text-white transition-colors duration-300">
+<body class="bg-neutral-950 text-white transition-colors duration-300">
   <div id="root"></div>
 
+  <script>
+    // Registra o Service Worker apenas se estiver rodando em HTTPS ou Localhost (evita erros no preview)
+    if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').then(reg => {
+          console.log('Service Worker Registrado!', reg);
+        }).catch(err => console.warn('Ambiente local, SW não registrado.', err));
+      });
+    }
+  </script>
+
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useMemo, useCallback } from 'react';
+    import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
     import { 
       Home, PieChart, Target, Settings, Plus, X, 
       TrendingUp, TrendingDown, Wallet, Search, Check, 
-      AlertCircle, Moon, Sun, Download, Upload, Trash2, Smartphone, 
-      ChevronRight, ChevronLeft, BrainCircuit, Info, Activity, FileText, Goal
+      AlertCircle, Download, Upload, Trash2, Smartphone, 
+      ChevronRight, ChevronLeft, BrainCircuit, Info, Activity, FileText, Goal,
+      RefreshCw, CheckSquare, Square
     } from 'lucide-react';
-    import { AreaChart, Area, Tooltip, ResponsiveContainer, XAxis, YAxis, CartesianGrid } from 'recharts';
+    import { AreaChart, Area, BarChart, Bar, Tooltip, ResponsiveContainer, XAxis, CartesianGrid, Cell } from 'recharts';
     import { motion, AnimatePresence } from 'framer-motion';
     import { create } from 'zustand';
     import { useForm } from 'react-hook-form';
-    import { format, isThisMonth, isSameMonth, subMonths, addMonths, parseISO, endOfMonth, getDate } from 'date-fns';
+    import { format, isSameMonth, subMonths, addMonths, parseISO, endOfMonth, getDate } from 'date-fns';
     import { ptBR } from 'date-fns/locale';
 
     const DB_NAME = 'FinanceAppDB';
-    const DB_VERSION = 1;
+    const DB_VERSION = 2; // Atualizado para suportar itens Fixos
 
     const openDB = () => {
       return new Promise((resolve, reject) => {
@@ -74,6 +94,7 @@
           if (!db.objectStoreNames.contains('categories')) db.createObjectStore('categories', { keyPath: 'id' });
           if (!db.objectStoreNames.contains('goals')) db.createObjectStore('goals', { keyPath: 'id' });
           if (!db.objectStoreNames.contains('debts')) db.createObjectStore('debts', { keyPath: 'id' });
+          if (!db.objectStoreNames.contains('fixedItems')) db.createObjectStore('fixedItems', { keyPath: 'id' });
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
@@ -84,8 +105,7 @@
       async toArray(storeName) {
         const db = await openDB();
         return new Promise((resolve, reject) => {
-          const tx = db.transaction(storeName, 'readonly');
-          const request = tx.objectStore(storeName).getAll();
+          const request = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
           request.onsuccess = () => resolve(request.result);
           request.onerror = () => reject(request.error);
         });
@@ -93,8 +113,7 @@
       async add(storeName, item) {
         const db = await openDB();
         return new Promise((resolve, reject) => {
-          const tx = db.transaction(storeName, 'readwrite');
-          const request = tx.objectStore(storeName).put(item);
+          const request = db.transaction(storeName, 'readwrite').objectStore(storeName).put(item);
           request.onsuccess = () => resolve();
           request.onerror = () => reject(request.error);
         });
@@ -112,8 +131,7 @@
       async delete(storeName, id) {
         const db = await openDB();
         return new Promise((resolve, reject) => {
-          const tx = db.transaction(storeName, 'readwrite');
-          const request = tx.objectStore(storeName).delete(id);
+          const request = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(id);
           request.onsuccess = () => resolve();
           request.onerror = () => reject(request.error);
         });
@@ -121,8 +139,7 @@
       async clear(storeName) {
         const db = await openDB();
         return new Promise((resolve, reject) => {
-          const tx = db.transaction(storeName, 'readwrite');
-          const request = tx.objectStore(storeName).clear();
+          const request = db.transaction(storeName, 'readwrite').objectStore(storeName).clear();
           request.onsuccess = () => resolve();
           request.onerror = () => reject(request.error);
         });
@@ -137,13 +154,10 @@
       { id: 'c5', name: 'Lazer', emoji: '🎮', type: 'expense' },
       { id: 'c6', name: 'Saúde', emoji: '❤️', type: 'expense' },
       { id: 'c7', name: 'Assinaturas', emoji: '📱', type: 'expense' },
-      { id: 'c8', name: 'Contas', emoji: '💡', type: 'expense' },
-      { id: 'c9', name: 'Estudos', emoji: '📚', type: 'expense' },
-      { id: 'c10', name: 'Pets', emoji: '🐶', type: 'expense' },
-      { id: 'c11', name: 'Salário', emoji: '💼', type: 'income' },
-      { id: 'c12', name: 'Freelance', emoji: '💻', type: 'income' },
-      { id: 'c13', name: 'Rendimento', emoji: '📈', type: 'income' },
-      { id: 'c14', name: 'Objetivos', emoji: '🎯', type: 'expense' },
+      { id: 'c8', name: 'Contas Fixas', emoji: '💡', type: 'expense' },
+      { id: 'c9', name: 'Salário', emoji: '💼', type: 'income' },
+      { id: 'c10', name: 'Rendimento', emoji: '📈', type: 'income' },
+      { id: 'c11', name: 'Objetivos', emoji: '🎯', type: 'expense' },
     ];
 
     const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
@@ -157,7 +171,6 @@
       const descriptionPart = (match[1] || match[3] || '').trim();
       let amountStr = (match[2] || match[4] || '').replace(',', '.');
       const amount = parseFloat(amountStr);
-
       if (isNaN(amount) || !descriptionPart) return null;
 
       const descLower = descriptionPart.toLowerCase();
@@ -165,242 +178,157 @@
       let type = 'expense';
 
       if (!categoryId) {
-        if (descLower.includes('mercado') || descLower.includes('extra')) {
-          categoryId = categories.find(c => c.name === 'Mercado')?.id;
-        } else if (descLower.includes('uber') || descLower.includes('gasolina')) {
-          categoryId = categories.find(c => c.name === 'Transporte')?.id;
-        } else if (descLower.includes('ifood') || descLower.includes('lanchonete')) {
-          categoryId = categories.find(c => c.name === 'Alimentação')?.id;
-        } else if (descLower.includes('salário') || descLower.includes('pix')) {
-          categoryId = categories.find(c => c.name === 'Salário')?.id;
-          type = 'income';
-        } else {
-          categoryId = categories.find(c => c.type === type)?.id; 
-        }
+        if (descLower.includes('mercado') || descLower.includes('extra')) categoryId = categories.find(c => c.name === 'Mercado')?.id;
+        else if (descLower.includes('uber') || descLower.includes('gasolina')) categoryId = categories.find(c => c.name === 'Transporte')?.id;
+        else if (descLower.includes('ifood') || descLower.includes('lanchonete')) categoryId = categories.find(c => c.name === 'Alimentação')?.id;
+        else if (descLower.includes('salário') || descLower.includes('pix')) { categoryId = categories.find(c => c.name === 'Salário')?.id; type = 'income'; }
+        else categoryId = categories.find(c => c.type === type)?.id; 
       } else {
         type = categories.find(c => c.id === categoryId)?.type || 'expense';
       }
 
-      return {
-        description: descriptionPart.charAt(0).toUpperCase() + descriptionPart.slice(1),
-        amount, categoryId, type,
-        date: new Date().toISOString()
-      };
-    };
-
-    const getInitialTheme = () => {
-      const saved = localStorage.getItem('finance_theme');
-      if (saved) return saved === 'dark';
-      return true; // Prioridade total para o Modo Escuro por padrão
+      return { description: descriptionPart.charAt(0).toUpperCase() + descriptionPart.slice(1), amount, categoryId, type, date: new Date().toISOString() };
     };
 
     const useAppStore = create((set, get) => ({
       currentView: 'dashboard',
       currentDate: new Date(),
-      isDark: getInitialTheme(),
-      transactions: [], categories: [], goals: [], debts: [],
-      isBottomSheetOpen: false, snackbarMessage: null,
-      editingTx: null,
+      transactions: [], categories: [], goals: [], debts: [], fixedItems: [],
+      isBottomSheetOpen: false, snackbarMessage: null, editingTx: null,
 
       setCurrentView: (view) => set({ currentView: view }),
       setCurrentDate: (date) => set({ currentDate: date }),
-      toggleTheme: () => set((state) => {
-        const newDark = !state.isDark;
-        localStorage.setItem('finance_theme', newDark ? 'dark' : 'light');
-        document.documentElement.classList.toggle('dark', newDark);
-        return { isDark: newDark };
-      }),
-      setBottomSheetOpen: (isOpen) => {
-        set({ isBottomSheetOpen: isOpen });
-        if (!isOpen) set({ editingTx: null });
-      },
+      setBottomSheetOpen: (isOpen) => { set({ isBottomSheetOpen: isOpen }); if (!isOpen) set({ editingTx: null }); },
       setEditingTx: (tx) => set({ editingTx: tx, isBottomSheetOpen: true }),
-      showSnackbar: (msg) => {
-        set({ snackbarMessage: msg });
-        setTimeout(() => set({ snackbarMessage: null }), 3000);
-      },
-      hideSnackbar: () => set({ snackbarMessage: null }),
+      showSnackbar: (msg) => { set({ snackbarMessage: msg }); setTimeout(() => set({ snackbarMessage: null }), 3000); },
 
       initialize: async () => {
         let cats = await dbStore.toArray('categories');
-        if (cats.length === 0) {
-          await dbStore.bulkAdd('categories', DEFAULT_CATEGORIES);
-          cats = await dbStore.toArray('categories');
-        }
-        const rawTransactions = await dbStore.toArray('transactions');
-        const transactions = rawTransactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        const goals = await dbStore.toArray('goals');
-        const debts = await dbStore.toArray('debts');
-        
-        set({ transactions, categories: cats, goals, debts });
-        
-        // Garante que o tema inicial seja aplicado no HTML
-        if (get().isDark) document.documentElement.classList.add('dark');
-        else document.documentElement.classList.remove('dark');
+        if (cats.length === 0) { await dbStore.bulkAdd('categories', DEFAULT_CATEGORIES); cats = await dbStore.toArray('categories'); }
+        const txs = await dbStore.toArray('transactions');
+        set({ 
+          categories: cats, 
+          transactions: txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()), 
+          goals: await dbStore.toArray('goals'), 
+          debts: await dbStore.toArray('debts'),
+          fixedItems: await dbStore.toArray('fixedItems')
+        });
       },
 
       addTransaction: async (tx) => {
         const newTx = { ...tx, id: generateId() };
         await dbStore.add('transactions', newTx);
-        const rawTxs = await dbStore.toArray('transactions');
-        set({ transactions: rawTxs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
+        const txs = await dbStore.toArray('transactions');
+        set({ transactions: txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
         get().showSnackbar('Movimentação adicionada!');
       },
 
-      updateTransaction: async (id, updatedTx) => {
-        const tx = { ...updatedTx, id };
-        await dbStore.add('transactions', tx);
-        const rawTxs = await dbStore.toArray('transactions');
-        set({ transactions: rawTxs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
+      updateTransaction: async (id, tx) => {
+        await dbStore.add('transactions', { ...tx, id });
+        const txs = await dbStore.toArray('transactions');
+        set({ transactions: txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
         get().showSnackbar('Movimentação atualizada!');
       },
 
       deleteTransaction: async (id) => {
         await dbStore.delete('transactions', id);
-        const rawTxs = await dbStore.toArray('transactions');
-        set({ transactions: rawTxs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
-        get().showSnackbar('Transação removida.');
+        const txs = await dbStore.toArray('transactions');
+        set({ transactions: txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
+        get().showSnackbar('Removido.');
       },
 
-      addGoal: async (goal) => {
-        const newGoal = { ...goal, id: generateId() };
-        await dbStore.add('goals', newGoal);
-        set({ goals: await dbStore.toArray('goals') });
-        get().showSnackbar('Objetivo criado!');
+      // Funções para Contas e Ganhos Fixos
+      addFixedItem: async (item) => {
+        await dbStore.add('fixedItems', { ...item, id: generateId() });
+        set({ fixedItems: await dbStore.toArray('fixedItems') });
+        get().showSnackbar('Item fixo adicionado!');
+      },
+      updateFixedItem: async (id, item) => {
+        await dbStore.add('fixedItems', { ...item, id });
+        set({ fixedItems: await dbStore.toArray('fixedItems') });
+        get().showSnackbar('Item fixo atualizado!');
+      },
+      deleteFixedItem: async (id) => {
+        await dbStore.delete('fixedItems', id);
+        set({ fixedItems: await dbStore.toArray('fixedItems') });
+        get().showSnackbar('Item fixo excluído.');
+      },
+      toggleFixedPayment: async (fixedItem, dateObj, isAlreadyPaid) => {
+        if (isAlreadyPaid) {
+          const tx = get().transactions.find(t => t.fixedItemId === fixedItem.id && isSameMonth(parseISO(t.date), dateObj));
+          if (tx) await get().deleteTransaction(tx.id);
+        } else {
+          await get().addTransaction({
+            description: fixedItem.description, amount: fixedItem.amount,
+            categoryId: fixedItem.categoryId, type: fixedItem.type,
+            date: new Date(dateObj.getFullYear(), dateObj.getMonth(), new Date().getDate(), 12).toISOString(),
+            fixedItemId: fixedItem.id
+          });
+        }
       },
 
-      updateGoal: async (id, updatedGoal) => {
-        const goal = { ...updatedGoal, id };
-        await dbStore.add('goals', goal);
-        set({ goals: await dbStore.toArray('goals') });
-        get().showSnackbar('Objetivo atualizado!');
-      },
-
+      addGoal: async (goal) => { await dbStore.add('goals', { ...goal, id: generateId() }); set({ goals: await dbStore.toArray('goals') }); get().showSnackbar('Objetivo criado!'); },
+      updateGoal: async (id, goal) => { await dbStore.add('goals', { ...goal, id }); set({ goals: await dbStore.toArray('goals') }); get().showSnackbar('Objetivo atualizado!'); },
+      deleteGoal: async (id) => { await dbStore.delete('goals', id); set({ goals: await dbStore.toArray('goals') }); },
       addFundsToGoal: async (goalId, amount) => {
         const { goals, addTransaction, categories } = get();
         const goal = goals.find(g => g.id === goalId);
         if (!goal) return;
-        
-        const updatedGoal = { ...goal, currentAmount: (goal.currentAmount || 0) + amount };
-        await dbStore.add('goals', updatedGoal);
+        await dbStore.add('goals', { ...goal, currentAmount: (goal.currentAmount || 0) + amount });
         set({ goals: await dbStore.toArray('goals') });
-        
-        let cat = categories.find(c => c.name === 'Objetivos');
-        if(!cat) cat = categories[0];
-        
-        await addTransaction({
-           description: `Guardado: ${goal.name}`,
-           amount: amount,
-           categoryId: cat.id,
-           type: 'expense',
-           date: new Date().toISOString(),
-           isRecurring: false
-        });
-        
+        let cat = categories.find(c => c.name === 'Objetivos') || categories[0];
+        await addTransaction({ description: `Guardado: ${goal.name}`, amount, categoryId: cat.id, type: 'expense', date: new Date().toISOString() });
         get().showSnackbar('Valor guardado com sucesso!');
       },
 
-      addDebt: async (debt) => {
-        const newDebt = { ...debt, id: generateId(), amountPaid: 0 };
-        await dbStore.add('debts', newDebt);
-        set({ debts: await dbStore.toArray('debts') });
-        get().showSnackbar('Dívida registrada!');
-      },
-
-      updateDebt: async (id, updatedDebt) => {
-        const debt = { ...updatedDebt, id };
-        await dbStore.add('debts', debt);
-        set({ debts: await dbStore.toArray('debts') });
-        get().showSnackbar('Dívida atualizada!');
-      },
-
+      addDebt: async (debt) => { await dbStore.add('debts', { ...debt, id: generateId(), amountPaid: 0 }); set({ debts: await dbStore.toArray('debts') }); get().showSnackbar('Dívida registrada!'); },
+      updateDebt: async (id, debt) => { await dbStore.add('debts', { ...debt, id }); set({ debts: await dbStore.toArray('debts') }); get().showSnackbar('Dívida atualizada!'); },
+      deleteDebt: async (id) => { await dbStore.delete('debts', id); set({ debts: await dbStore.toArray('debts') }); },
       payDebt: async (debtId, amount) => {
         const { debts, addTransaction, categories } = get();
         const debt = debts.find(d => d.id === debtId);
         if (!debt) return;
-        
-        const updatedDebt = { ...debt, amountPaid: (debt.amountPaid || 0) + amount };
-        await dbStore.add('debts', updatedDebt);
+        await dbStore.add('debts', { ...debt, amountPaid: (debt.amountPaid || 0) + amount });
         set({ debts: await dbStore.toArray('debts') });
-        
-        let cat = categories.find(c => c.name === 'Contas');
-        if(!cat) cat = categories[0];
-        
-        await addTransaction({
-           description: `Pagamento Dívida: ${debt.personOrInstitution}`,
-           amount: amount,
-           categoryId: cat.id,
-           type: 'expense',
-           date: new Date().toISOString(),
-           isRecurring: false
-        });
-        
+        let cat = categories.find(c => c.name === 'Contas Fixas') || categories[0];
+        await addTransaction({ description: `Pagamento Dívida: ${debt.personOrInstitution}`, amount, categoryId: cat.id, type: 'expense', date: new Date().toISOString() });
         get().showSnackbar('Pagamento registrado no seu saldo!');
-      },
-
-      deleteDebt: async (id) => {
-        await dbStore.delete('debts', id);
-        set({ debts: await dbStore.toArray('debts') });
-        get().showSnackbar('Dívida apagada.');
       },
 
       exportData: async () => {
         const data = {
-          transactions: await dbStore.toArray('transactions'),
-          categories: await dbStore.toArray('categories'),
-          goals: await dbStore.toArray('goals'),
-          debts: await dbStore.toArray('debts'),
+          transactions: await dbStore.toArray('transactions'), categories: await dbStore.toArray('categories'),
+          goals: await dbStore.toArray('goals'), debts: await dbStore.toArray('debts'), fixedItems: await dbStore.toArray('fixedItems')
         };
         return JSON.stringify(data);
       },
-
       importData: async (jsonStr) => {
         try {
           const data = JSON.parse(jsonStr);
-          await dbStore.clear('transactions');
-          await dbStore.clear('categories');
-          await dbStore.clear('goals');
-          await dbStore.clear('debts');
-          
+          await dbStore.clear('transactions'); await dbStore.clear('categories'); await dbStore.clear('goals'); await dbStore.clear('debts'); await dbStore.clear('fixedItems');
           if (data.transactions) await dbStore.bulkAdd('transactions', data.transactions);
           if (data.categories) await dbStore.bulkAdd('categories', data.categories);
           if (data.goals) await dbStore.bulkAdd('goals', data.goals);
           if (data.debts) await dbStore.bulkAdd('debts', data.debts);
-          
-          await get().initialize();
-          get().showSnackbar('Dados importados!');
-        } catch (e) {
-          get().showSnackbar('Erro ao importar arquivo.');
-        }
+          if (data.fixedItems) await dbStore.bulkAdd('fixedItems', data.fixedItems);
+          await get().initialize(); get().showSnackbar('Dados importados!');
+        } catch (e) { get().showSnackbar('Erro ao importar arquivo.'); }
       },
-
       clearData: async () => {
-        await dbStore.clear('transactions');
-        await dbStore.clear('goals');
-        await dbStore.clear('debts');
-        await get().initialize();
-        get().showSnackbar('Todos os dados foram apagados.');
+        await dbStore.clear('transactions'); await dbStore.clear('goals'); await dbStore.clear('debts'); await dbStore.clear('fixedItems');
+        await get().initialize(); get().showSnackbar('Todos os dados foram apagados.');
       }
     }));
 
     const Card = ({ children, className = '', onClick }) => (
-      <motion.div 
-        whileTap={onClick ? { scale: 0.98 } : {}}
-        onClick={onClick}
-        className={`bg-white dark:bg-neutral-800/80 backdrop-blur-xl border border-slate-100 dark:border-neutral-700/50 rounded-3xl p-5 shadow-sm transition-colors ${className} ${onClick ? 'cursor-pointer' : ''}`}
-      >
+      <motion.div whileTap={onClick ? { scale: 0.98 } : {}} onClick={onClick} className={`bg-neutral-900 border border-neutral-800 rounded-3xl p-5 shadow-lg ${className} ${onClick ? 'cursor-pointer' : ''}`}>
         {children}
       </motion.div>
     );
 
     const ProgressBar = ({ progress, color }) => (
-      <div className="w-full bg-slate-100 dark:bg-neutral-700 rounded-full h-3 overflow-hidden">
-        <motion.div 
-          initial={{ width: 0 }}
-          animate={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
-          transition={{ duration: 1, ease: "easeOut" }}
-          className={`h-3 rounded-full ${color}`}
-        />
+      <div className="w-full bg-neutral-800 rounded-full h-3 overflow-hidden">
+        <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, Math.max(0, progress))}%` }} transition={{ duration: 1, ease: "easeOut" }} className={`h-3 rounded-full ${color}`} />
       </div>
     );
 
@@ -409,12 +337,7 @@
       return (
         <AnimatePresence>
           {snackbarMessage && (
-            <motion.div
-              initial={{ opacity: 0, y: 50, x: '-50%' }}
-              animate={{ opacity: 1, y: 0, x: '-50%' }}
-              exit={{ opacity: 0, y: 50, x: '-50%' }}
-              className="fixed bottom-24 left-1/2 z-50 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 px-6 py-3 rounded-full shadow-xl flex items-center gap-2 whitespace-nowrap text-sm font-medium"
-            >
+            <motion.div initial={{ opacity: 0, y: 50, x: '-50%' }} animate={{ opacity: 1, y: 0, x: '-50%' }} exit={{ opacity: 0, y: 50, x: '-50%' }} className="fixed bottom-24 left-1/2 z-50 bg-white text-neutral-900 px-6 py-3 rounded-full shadow-xl flex items-center gap-2 whitespace-nowrap text-sm font-medium">
               <Check size={16} /> {snackbarMessage}
             </motion.div>
           )}
@@ -425,28 +348,27 @@
     const getAssistantInsights = (transactions, currentDate) => {
       const insights = [];
       const lastMonthDate = subMonths(currentDate, 1);
+      const thisMonthTx = transactions.filter(t => isSameMonth(parseISO(t.date), currentDate));
+      const lastMonthTx = transactions.filter(t => isSameMonth(parseISO(t.date), lastMonthDate));
       
-      const thisMonthExpenses = transactions.filter(t => t.type === 'expense' && isSameMonth(parseISO(t.date), currentDate));
-      const lastMonthExpenses = transactions.filter(t => t.type === 'expense' && isSameMonth(parseISO(t.date), lastMonthDate));
+      const thisMonthExpenses = thisMonthTx.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+      const lastMonthExpenses = lastMonthTx.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
       
-      const totalThisMonth = thisMonthExpenses.reduce((acc, t) => acc + t.amount, 0);
-      const totalLastMonth = lastMonthExpenses.reduce((acc, t) => acc + t.amount, 0);
-      
-      if (totalLastMonth > 0) {
-        const diff = totalLastMonth - totalThisMonth;
+      if (lastMonthExpenses > 0) {
+        const diff = lastMonthExpenses - thisMonthExpenses;
         if (diff > 0 && new Date().getDate() > 15 && isSameMonth(currentDate, new Date())) {
-          insights.push(`Economia de ${formatCurrency(diff)} até agora! 🎉`);
-        } else if (totalThisMonth > totalLastMonth) {
-          insights.push(`Atenção: Gastos superaram o mês passado.`);
+          insights.push(`Você economizou ${formatCurrency(diff)} este mês! 🎉`);
+        } else if (thisMonthExpenses > lastMonthExpenses) {
+          insights.push(`Seus gastos superaram o mês passado.`);
         }
       }
 
-      if (insights.length === 0) insights.push("Tudo tranquilo por aqui! ✌️");
+      if (thisMonthTx.length === 0) insights.push("Nenhuma movimentação neste mês.");
+      else if (insights.length === 0) insights.push("Tudo sob controle! ✌️");
       return insights;
     };
 
-    const MiniAssistantBubble = () => {
-      const { transactions, currentDate } = useAppStore();
+    const MiniAssistantBubble = ({ transactions, currentDate }) => {
       const insights = useMemo(() => getAssistantInsights(transactions, currentDate), [transactions, currentDate]);
       const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -459,16 +381,10 @@
       if (transactions.length === 0) return null;
 
       return (
-        <div className="absolute -top-4 right-4 z-10 bg-indigo-600 dark:bg-indigo-500 text-white text-[11px] font-bold py-1.5 px-3 rounded-2xl rounded-br-sm shadow-lg shadow-indigo-500/30 flex items-center gap-1.5 max-w-[200px] border border-indigo-400 dark:border-indigo-400/50">
-          <BrainCircuit size={14} className="shrink-0 text-indigo-200" />
+        <div className="absolute -top-6 right-4 z-10 bg-indigo-500 text-white text-[11px] font-bold py-2 px-3 rounded-2xl rounded-br-sm shadow-lg shadow-indigo-500/30 flex items-center gap-1.5 max-w-[200px]">
+          <BrainCircuit size={14} className="shrink-0 text-indigo-100" />
           <AnimatePresence mode="wait">
-            <motion.span 
-              key={currentIndex} 
-              initial={{ opacity: 0, y: 2 }} 
-              animate={{ opacity: 1, y: 0 }} 
-              exit={{ opacity: 0, y: -2 }} 
-              className="leading-tight truncate"
-            >
+            <motion.span key={currentIndex} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} className="leading-tight truncate">
               {insights[currentIndex]}
             </motion.span>
           </AnimatePresence>
@@ -479,31 +395,22 @@
     const TransactionItem = ({ tx }) => {
       const { categories, deleteTransaction, setEditingTx } = useAppStore();
       const category = categories.find(c => c.id === tx.categoryId);
-      
       return (
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
-          className="bg-white dark:bg-neutral-800/80 p-4 rounded-2xl flex items-center justify-between shadow-sm border border-slate-100 dark:border-neutral-700/50"
-        >
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="bg-neutral-900 p-4 rounded-2xl flex items-center justify-between shadow-sm border border-neutral-800">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-slate-50 dark:bg-neutral-700 rounded-full flex items-center justify-center text-xl shadow-inner">
-              {category?.emoji || '💰'}
-            </div>
+            <div className="w-12 h-12 bg-neutral-800 rounded-full flex items-center justify-center text-xl shadow-inner">{category?.emoji || '💰'}</div>
             <div>
-              <p className="font-semibold text-slate-800 dark:text-white">{tx.description}</p>
-              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-neutral-400 mt-1">
-                <span>{category?.name}</span>
-                <span>•</span>
-                <span>{format(parseISO(tx.date), "dd MMM", { locale: ptBR })}</span>
+              <p className="font-semibold text-white">{tx.description}</p>
+              <div className="flex items-center gap-2 text-xs text-neutral-400 mt-1">
+                <span>{category?.name}</span><span>•</span><span>{format(parseISO(tx.date), "dd MMM", { locale: ptBR })}</span>
+                {tx.fixedItemId && <span className="text-indigo-400 font-semibold flex items-center"><RefreshCw size={10} className="mr-0.5"/> Fixo</span>}
               </div>
             </div>
           </div>
           <div className="text-right flex flex-col items-end">
-            <p className={`font-bold ${tx.type === 'income' ? 'text-emerald-500' : 'text-slate-800 dark:text-white'}`}>
-              {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
-            </p>
+            <p className={`font-bold ${tx.type === 'income' ? 'text-emerald-500' : 'text-white'}`}>{tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}</p>
             <div className="flex gap-3 mt-2">
-              <button onClick={() => setEditingTx(tx)} className="text-xs font-medium text-indigo-500 opacity-80 hover:opacity-100">Editar</button>
+              <button onClick={() => setEditingTx(tx)} className="text-xs font-medium text-indigo-400 opacity-80 hover:opacity-100">Editar</button>
               <button onClick={() => deleteTransaction(tx.id)} className="text-xs font-medium text-rose-500 opacity-80 hover:opacity-100">Excluir</button>
             </div>
           </div>
@@ -512,7 +419,7 @@
     };
 
     const DashboardView = () => {
-      const { transactions, setCurrentView, currentDate, setCurrentDate, isDark, goals } = useAppStore();
+      const { transactions, setCurrentView, currentDate, setCurrentDate, goals } = useAppStore();
       const currentMonthTx = useMemo(() => transactions.filter(t => isSameMonth(parseISO(t.date), currentDate)), [transactions, currentDate]);
       const income = currentMonthTx.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
       const expense = currentMonthTx.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
@@ -522,7 +429,6 @@
       const handlePrevMonth = () => setCurrentDate(subMonths(currentDate, 1));
       const handleNextMonth = () => setCurrentDate(addMonths(currentDate, 1));
 
-      // Preparando dados para o Gráfico Melhorado
       const chartData = useMemo(() => {
         const data = {};
         const daysInMonth = getDate(endOfMonth(currentDate));
@@ -542,149 +448,192 @@
         <div className="pb-24 space-y-6 pt-4 px-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
           <header className="flex justify-between items-center px-2">
             <div>
-              <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Visão Geral</h1>
+              <h1 className="text-2xl font-bold text-white">Visão Geral</h1>
               <div className="flex items-center gap-2 mt-1 -ml-2">
-                <button onClick={handlePrevMonth} className="p-2 rounded-full text-slate-400 hover:bg-slate-200 dark:hover:bg-neutral-800 transition-colors"><ChevronLeft size={18} /></button>
-                <span className="text-slate-600 dark:text-neutral-400 text-sm font-bold capitalize min-w-[100px] text-center">
-                  {format(currentDate, 'MMMM yyyy', { locale: ptBR })}
-                </span>
-                <button onClick={handleNextMonth} className="p-2 rounded-full text-slate-400 hover:bg-slate-200 dark:hover:bg-neutral-800 transition-colors"><ChevronRight size={18} /></button>
+                <button onClick={handlePrevMonth} className="p-2 rounded-full text-neutral-400 hover:bg-neutral-800 transition-colors"><ChevronLeft size={18} /></button>
+                <span className="text-neutral-300 text-sm font-bold capitalize min-w-[100px] text-center">{format(currentDate, 'MMMM yyyy', { locale: ptBR })}</span>
+                <button onClick={handleNextMonth} className="p-2 rounded-full text-neutral-400 hover:bg-neutral-800 transition-colors"><ChevronRight size={18} /></button>
               </div>
             </div>
-            <button onClick={() => setCurrentView('settings')} className="w-10 h-10 bg-indigo-100 dark:bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 shadow-sm active:scale-95 transition-transform">
-              <Settings size={20} />
-            </button>
+            <button onClick={() => setCurrentView('settings')} className="w-10 h-10 bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-400 shadow-sm active:scale-95 transition-transform"><Settings size={20} /></button>
           </header>
 
-          <Card className="bg-slate-900 dark:bg-neutral-800 text-white border-none shadow-xl">
-            <p className="text-slate-400 dark:text-neutral-400 text-sm font-medium mb-1">Saldo do mês</p>
+          <Card className="bg-neutral-900 text-white border-none shadow-2xl">
+            <p className="text-neutral-400 text-sm font-medium mb-1">Saldo do mês</p>
             <h2 className="text-4xl font-bold tracking-tight mb-6">{formatCurrency(balance)}</h2>
             <div className="flex justify-between items-center gap-4 mb-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400"><TrendingUp size={20} /></div>
-                <div><p className="text-xs text-slate-400">Ganhos</p><p className="font-semibold">{formatCurrency(income)}</p></div>
+                <div><p className="text-xs text-neutral-400">Ganhos</p><p className="font-semibold">{formatCurrency(income)}</p></div>
               </div>
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-rose-500/20 flex items-center justify-center text-rose-400"><TrendingDown size={20} /></div>
-                <div><p className="text-xs text-slate-400">Gastos</p><p className="font-semibold">{formatCurrency(expense)}</p></div>
+                <div><p className="text-xs text-neutral-400">Gastos</p><p className="font-semibold">{formatCurrency(expense)}</p></div>
               </div>
             </div>
-            
             {totalSaved > 0 && (
-              <div className="pt-4 border-t border-slate-700/50 flex justify-between items-center animate-in fade-in">
-                <span className="text-sm text-slate-400">Total Guardado (Objetivos)</span>
-                <span className="font-bold text-indigo-400">{formatCurrency(totalSaved)}</span>
+              <div className="pt-4 border-t border-neutral-800 flex justify-between items-center animate-in fade-in">
+                <span className="text-sm text-neutral-400">Total Guardado (Metas)</span><span className="font-bold text-indigo-400">{formatCurrency(totalSaved)}</span>
               </div>
             )}
           </Card>
 
-          {/* Gráfico Melhorado com Assistente Integrado */}
-          <Card className="relative mt-6">
-            <MiniAssistantBubble />
+          <Card className="relative mt-6 pt-8 pb-2">
+            <MiniAssistantBubble transactions={transactions} currentDate={currentDate} />
             <div className="flex justify-between items-center mb-6">
-              <h3 className="font-semibold text-slate-800 dark:text-white">Fluxo do Mês</h3>
-              <Activity size={16} className="text-slate-400" />
+              <h3 className="font-semibold text-white">Fluxo Diário</h3><Activity size={16} className="text-neutral-500" />
             </div>
             <div className="h-44 w-full -ml-4">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.5}/>
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.5}/>
-                      <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  
-                  {/* Linhas de grade super sutis */}
-                  <CartesianGrid strokeDasharray="4 4" vertical={false} stroke={isDark ? '#404040' : '#e2e8f0'} />
-                  
-                  {/* Eixo X indicando os dias de forma limpa */}
-                  <XAxis 
-                    dataKey="name" 
-                    axisLine={false} 
-                    tickLine={false} 
-                    tick={{ fontSize: 10, fill: isDark ? '#737373' : '#94a3b8' }} 
-                    dy={10} 
-                  />
-                  
-                  <Tooltip 
-                    contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.15)', backgroundColor: isDark ? '#171717' : '#ffffff' }} 
-                    itemStyle={{ color: isDark ? '#ffffff' : '#1e293b', fontWeight: 'bold' }} 
-                    labelStyle={{ color: isDark ? '#737373' : '#64748b', marginBottom: '4px' }} 
-                    cursor={{ stroke: isDark ? '#525252' : '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }}
-                  />
-                  
-                  <Area 
-                    type="monotone" 
-                    dataKey="Ganhos" 
-                    stroke="#10b981" 
-                    strokeWidth={3} 
-                    fillOpacity={1} 
-                    fill="url(#colorIncome)" 
-                    activeDot={{ r: 6, fill: "#10b981", stroke: isDark ? "#171717" : "#fff", strokeWidth: 3 }} 
-                  />
-                  <Area 
-                    type="monotone" 
-                    dataKey="Gastos" 
-                    stroke="#f43f5e" 
-                    strokeWidth={3} 
-                    fillOpacity={1} 
-                    fill="url(#colorExpense)" 
-                    activeDot={{ r: 6, fill: "#f43f5e", stroke: isDark ? "#171717" : "#fff", strokeWidth: 3 }} 
-                  />
-                </AreaChart>
+                <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#262626" />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#737373' }} dy={10} />
+                  <Tooltip cursor={{ fill: '#262626', opacity: 0.4 }} contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.5)', backgroundColor: '#171717' }} itemStyle={{ color: '#ffffff', fontWeight: 'bold' }} labelStyle={{ color: '#737373', marginBottom: '4px' }} />
+                  <Bar dataKey="Ganhos" fill="#10b981" radius={[4, 4, 0, 0]} barSize={8} />
+                  <Bar dataKey="Gastos" fill="#f43f5e" radius={[4, 4, 0, 0]} barSize={8} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </Card>
 
           <div className="pt-2">
-            <h3 className="font-semibold text-slate-800 dark:text-white mb-4 px-2">Últimas Movimentações</h3>
+            <h3 className="font-semibold text-white mb-4 px-2">Últimas Movimentações</h3>
             <div className="space-y-3">
               {currentMonthTx.slice(0, 3).map((tx) => <TransactionItem key={tx.id} tx={tx} />)}
-              {currentMonthTx.length === 0 && <div className="text-center py-8 text-slate-400"><p>Nenhuma movimentação registrada.</p></div>}
+              {currentMonthTx.length === 0 && <div className="text-center py-8 text-neutral-500"><p>Nenhuma movimentação registrada.</p></div>}
             </div>
           </div>
         </div>
       );
     };
 
-    const TransactionsView = () => {
-      const { transactions, currentDate, setCurrentDate } = useAppStore();
+    const TransactionsTabbedView = () => {
+      const { fixedItems, toggleFixedPayment, transactions, currentDate, setCurrentDate, categories, addFixedItem, updateFixedItem, deleteFixedItem } = useAppStore();
       const [filter, setFilter] = useState('');
-      
+      const [showForm, setShowForm] = useState(false);
+      const [editingId, setEditingId] = useState(null);
+      const { register, handleSubmit, reset, setValue, watch } = useForm({ defaultValues: { type: 'expense' } });
+
       const handlePrevMonth = () => setCurrentDate(subMonths(currentDate, 1));
       const handleNextMonth = () => setCurrentDate(addMonths(currentDate, 1));
 
-      const filtered = transactions.filter(t => {
-        const matchesMonth = isSameMonth(parseISO(t.date), currentDate);
-        const matchesSearch = t.description.toLowerCase().includes(filter.toLowerCase());
-        return matchesMonth && matchesSearch;
-      });
+      const type = watch('type');
+      const filteredCategories = categories.filter(c => c.type === type && c.name !== 'Objetivos');
+      const filteredTx = transactions.filter(t => isSameMonth(parseISO(t.date), currentDate) && t.description.toLowerCase().includes(filter.toLowerCase()));
+
+      const openEdit = (item) => {
+        setEditingId(item.id); setValue('description', item.description); setValue('amount', item.amount); setValue('type', item.type); setValue('categoryId', item.categoryId);
+        setShowForm(true);
+      };
+
+      const onSubmit = (data) => {
+        const payload = { description: data.description, amount: parseFloat(data.amount), type: data.type, categoryId: data.categoryId };
+        if (editingId) updateFixedItem(editingId, payload); else addFixedItem(payload);
+        setShowForm(false); setEditingId(null); reset();
+      };
 
       return (
-        <div className="pb-24 space-y-4 pt-4 px-4 animate-in fade-in">
-          <div className="flex justify-between items-center px-2 mb-2">
-            <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Movimentações</h1>
-            <div className="flex items-center gap-1 bg-white dark:bg-neutral-800 rounded-full shadow-sm px-1 py-1 border border-slate-100 dark:border-neutral-700">
-               <button onClick={handlePrevMonth} className="p-1 rounded-full text-slate-400 hover:text-indigo-500"><ChevronLeft size={16} /></button>
-               <span className="text-xs font-bold text-slate-600 dark:text-neutral-300 capitalize min-w-[70px] text-center">{format(currentDate, 'MMM yy', { locale: ptBR })}</span>
-               <button onClick={handleNextMonth} className="p-1 rounded-full text-slate-400 hover:text-indigo-500"><ChevronRight size={16} /></button>
+        <div className="pb-24 space-y-6 pt-4 px-4 animate-in fade-in">
+          {/* Cabeçalho */}
+          <div className="flex justify-between items-center px-2">
+            <h1 className="text-2xl font-bold text-white">Extrato</h1>
+            <div className="flex items-center gap-1 bg-neutral-900 rounded-full shadow-sm px-1 py-1 border border-neutral-800">
+               <button onClick={handlePrevMonth} className="p-1 rounded-full text-neutral-400 hover:text-indigo-400"><ChevronLeft size={16} /></button>
+               <span className="text-xs font-bold text-neutral-300 capitalize min-w-[70px] text-center">{format(currentDate, 'MMM yy', { locale: ptBR })}</span>
+               <button onClick={handleNextMonth} className="p-1 rounded-full text-neutral-400 hover:text-indigo-400"><ChevronRight size={16} /></button>
             </div>
           </div>
-          <div className="relative">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-            <input 
-              type="text" placeholder="Buscar gastos ou ganhos..." value={filter} onChange={(e) => setFilter(e.target.value)}
-              className="w-full bg-white dark:bg-neutral-800 border-none rounded-2xl py-4 pl-12 pr-4 shadow-sm text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
-            />
+
+          {/* Seção: Fixos Mensais (No Topo) */}
+          <div>
+            <div className="flex justify-between items-center px-2 mb-3">
+              <h3 className="font-semibold text-white">Fixos Mensais</h3>
+              <button onClick={() => { setShowForm(!showForm); if(showForm) { reset(); setEditingId(null); } }} className="bg-indigo-900/40 text-indigo-400 px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1 transition-transform active:scale-95">
+                {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancelar' : 'Novo Fixo'}
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {showForm && (
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                  <Card className="mb-4 border-indigo-900/50 bg-neutral-900/80">
+                    <h3 className="font-bold mb-4 text-white">{editingId ? 'Editar Fixo' : 'Novo Gasto/Ganho Fixo'}</h3>
+                    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+                      <div className="flex bg-neutral-800 rounded-2xl p-1">
+                        <button type="button" onClick={() => setValue('type', 'expense')} className={`flex-1 py-3 text-sm font-semibold rounded-xl transition-colors ${type === 'expense' ? 'bg-neutral-700 shadow text-rose-500' : 'text-neutral-500'}`}>Gasto Fixo</button>
+                        <button type="button" onClick={() => setValue('type', 'income')} className={`flex-1 py-3 text-sm font-semibold rounded-xl transition-colors ${type === 'income' ? 'bg-neutral-700 shadow text-emerald-500' : 'text-neutral-500'}`}>Ganho Fixo</button>
+                      </div>
+                      <input {...register('description', { required: true })} placeholder="Nome (ex: Internet, Salário)" className="w-full p-4 rounded-xl bg-neutral-950 border border-neutral-800 outline-none font-medium text-white" />
+                      <input {...register('amount', { required: true })} type="number" step="0.01" placeholder="Valor R$" className="w-full p-4 rounded-xl bg-neutral-950 border border-neutral-800 outline-none font-medium text-white" />
+                      <div className="grid grid-cols-4 gap-2">
+                        {filteredCategories.map(cat => (
+                          <div key={cat.id} onClick={() => setValue('categoryId', cat.id)} className={`cursor-pointer flex flex-col items-center justify-center p-3 rounded-2xl transition-colors ${watch('categoryId') === cat.id ? 'bg-indigo-900/50 border border-indigo-500' : 'bg-neutral-800 border border-transparent'}`}>
+                            <span className="text-2xl mb-1">{cat.emoji}</span><span className="text-[10px] font-medium text-center leading-tight text-neutral-400">{cat.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <button type="submit" className="w-full bg-indigo-600 text-white font-semibold p-4 rounded-xl shadow-lg active:scale-95 transition-transform">{editingId ? 'Salvar Alterações' : 'Cadastrar'}</button>
+                    </form>
+                  </Card>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="space-y-3">
+              {fixedItems.map(item => {
+                const category = categories.find(c => c.id === item.categoryId);
+                const isPaid = transactions.some(t => t.fixedItemId === item.id && isSameMonth(parseISO(t.date), currentDate));
+                
+                let checkboxColor = "text-neutral-600 hover:text-neutral-400";
+                let boxStyle = "border-neutral-800";
+                if (isPaid) {
+                   checkboxColor = item.type === 'income' ? 'text-emerald-500' : 'text-rose-500';
+                   boxStyle = item.type === 'income' ? 'border-emerald-500/30 bg-emerald-900/10' : 'border-rose-500/30 bg-rose-900/10';
+                }
+
+                return (
+                  <Card key={item.id} className={`flex items-center justify-between p-4 transition-colors border ${boxStyle}`}>
+                    <div className="flex items-center gap-3 flex-1">
+                      <button onClick={() => toggleFixedPayment(item, currentDate, isPaid)} className={`p-1 rounded-xl transition-colors ${checkboxColor}`}>
+                        {isPaid ? <CheckSquare size={26} /> : <Square size={26} />}
+                      </button>
+                      <div className="flex items-center gap-3">
+                         <div className="w-10 h-10 bg-neutral-800 rounded-full flex items-center justify-center text-lg shadow-inner">{category?.emoji}</div>
+                         <div>
+                           <p className={`font-semibold ${isPaid ? 'line-through opacity-70 text-neutral-400' : 'text-white'}`}>{item.description}</p>
+                           <p className="text-[10px] text-neutral-500 uppercase tracking-wider">{category?.name}</p>
+                         </div>
+                      </div>
+                    </div>
+                    <div className="text-right flex flex-col items-end">
+                      <p className={`font-bold ${item.type === 'income' ? 'text-emerald-500' : 'text-white'} ${isPaid ? 'opacity-50' : ''}`}>
+                        {item.type === 'income' ? '+' : '-'}{formatCurrency(item.amount)}
+                      </p>
+                      <div className="flex gap-3 mt-2">
+                        <button onClick={() => openEdit(item)} className="text-[10px] font-medium text-indigo-400 opacity-80 hover:opacity-100 uppercase tracking-wider">Editar</button>
+                        <button onClick={() => deleteFixedItem(item.id)} className="text-[10px] font-medium text-rose-500 opacity-80 hover:opacity-100 uppercase tracking-wider">Excluir</button>
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })}
+              {fixedItems.length === 0 && !showForm && (
+                <div className="text-center py-6 text-neutral-600 text-sm border border-dashed border-neutral-800 rounded-3xl">Nenhum fixo cadastrado.</div>
+              )}
+            </div>
           </div>
-          <div className="space-y-3 mt-6">
-            <AnimatePresence>{filtered.map(tx => <TransactionItem key={tx.id} tx={tx} />)}</AnimatePresence>
-            {filtered.length === 0 && <div className="text-center py-12 text-slate-400"><Search size={48} className="mx-auto mb-4 opacity-20" /><p>Nenhum registro encontrado.</p></div>}
+
+          {/* Seção: Movimentações Avulsas (Abaixo dos Fixos) */}
+          <div className="pt-4 border-t border-neutral-800/80">
+            <h3 className="font-semibold text-white mb-4 px-2">Movimentações</h3>
+            <div className="relative mb-4">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" size={20} />
+              <input type="text" placeholder="Buscar gastos ou ganhos..." value={filter} onChange={(e) => setFilter(e.target.value)} className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl py-4 pl-12 pr-4 shadow-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none" />
+            </div>
+            <div className="space-y-3">
+              <AnimatePresence>{filteredTx.map(tx => <TransactionItem key={tx.id} tx={tx} />)}</AnimatePresence>
+              {filteredTx.length === 0 && <div className="text-center py-12 text-neutral-600"><Search size={48} className="mx-auto mb-4 opacity-20" /><p>Nenhum registro encontrado.</p></div>}
+            </div>
           </div>
         </div>
       );
@@ -699,41 +648,29 @@
       const addFundsForm = useForm();
 
       const openEdit = (goal) => {
-        setEditingGoalId(goal.id);
-        setValue('name', goal.name);
-        setValue('targetAmount', goal.targetAmount);
-        setValue('deadline', goal.deadline);
-        setShowForm(true);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        setEditingGoalId(goal.id); setValue('name', goal.name); setValue('targetAmount', goal.targetAmount); setValue('deadline', goal.deadline);
+        setShowForm(true); window.scrollTo({ top: 0, behavior: 'smooth' });
       };
 
-      const closeForm = () => {
-        setShowForm(false);
-        setEditingGoalId(null);
-        reset();
-      };
+      const closeForm = () => { setShowForm(false); setEditingGoalId(null); reset(); };
 
       const onSubmit = (data) => {
-        if (editingGoalId) {
-          updateGoal(editingGoalId, { ...goals.find(g => g.id === editingGoalId), name: data.name, targetAmount: parseFloat(data.targetAmount), deadline: data.deadline });
-        } else {
-          addGoal({ name: data.name, targetAmount: parseFloat(data.targetAmount), currentAmount: 0, deadline: data.deadline, color: 'bg-indigo-500' });
-        }
+        if (editingGoalId) updateGoal(editingGoalId, { ...goals.find(g => g.id === editingGoalId), name: data.name, targetAmount: parseFloat(data.targetAmount), deadline: data.deadline });
+        else addGoal({ name: data.name, targetAmount: parseFloat(data.targetAmount), currentAmount: 0, deadline: data.deadline, color: 'bg-indigo-500' });
         closeForm();
       };
 
       const onAddFunds = (data) => {
         const val = parseFloat(data.amount);
         if (val > 0) addFundsToGoal(addFundsId, val);
-        setAddFundsId(null);
-        addFundsForm.reset();
+        setAddFundsId(null); addFundsForm.reset();
       };
 
       return (
         <div className="pb-24 space-y-6 pt-4 px-4 animate-in fade-in">
           <div className="flex justify-between items-center px-2">
-            <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Objetivos</h1>
-            <button onClick={() => showForm ? closeForm() : setShowForm(true)} className="bg-indigo-100 text-indigo-600 dark:bg-indigo-900/50 dark:text-indigo-400 px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1">
+            <h1 className="text-2xl font-bold text-white">Objetivos</h1>
+            <button onClick={() => showForm ? closeForm() : setShowForm(true)} className="bg-indigo-900/50 text-indigo-400 px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1">
               {showForm ? <X size={16} /> : <Plus size={16} />} {showForm ? 'Cancelar' : 'Novo'}
             </button>
           </div>
@@ -741,12 +678,12 @@
           <AnimatePresence>
             {showForm && (
               <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                <Card className="mb-6 border-indigo-100 dark:border-indigo-900/50">
-                  <h3 className="font-bold mb-3 text-slate-800 dark:text-white">{editingGoalId ? 'Editar Objetivo' : 'Novo Objetivo'}</h3>
+                <Card className="mb-6 border-indigo-900/50">
+                  <h3 className="font-bold mb-3 text-white">{editingGoalId ? 'Editar Objetivo' : 'Novo Objetivo'}</h3>
                   <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                    <input {...register('name', { required: true })} placeholder="Nome (ex: Viagem)" className="w-full p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none outline-none font-medium text-slate-900 dark:text-white placeholder:font-normal placeholder-slate-400" />
-                    <input {...register('targetAmount', { required: true })} type="number" step="0.01" placeholder="Valor desejado R$" className="w-full p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none outline-none font-medium text-slate-900 dark:text-white placeholder:font-normal placeholder-slate-400" />
-                    <input {...register('deadline', { required: true })} type="date" className="w-full p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none outline-none font-medium text-slate-900 dark:text-white" />
+                    <input {...register('name', { required: true })} placeholder="Nome (ex: Viagem)" className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-800 outline-none font-medium text-white" />
+                    <input {...register('targetAmount', { required: true })} type="number" step="0.01" placeholder="Valor desejado R$" className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-800 outline-none font-medium text-white" />
+                    <input {...register('deadline', { required: true })} type="date" className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-800 outline-none font-medium text-white" />
                     <button type="submit" className="w-full bg-indigo-600 text-white font-semibold p-3 rounded-xl">{editingGoalId ? 'Salvar Alterações' : 'Criar Objetivo'}</button>
                   </form>
                 </Card>
@@ -762,35 +699,27 @@
                 <Card key={goal.id}>
                   <div className="flex justify-between items-start mb-2">
                     <div>
-                      <h3 className="font-bold text-lg text-slate-800 dark:text-white">{goal.name}</h3>
-                      <p className="text-slate-500 text-sm mt-1">Faltam {formatCurrency(goal.targetAmount - goal.currentAmount)}</p>
+                      <h3 className="font-bold text-lg text-white">{goal.name}</h3>
+                      <p className="text-neutral-500 text-sm mt-1">Faltam {formatCurrency(goal.targetAmount - goal.currentAmount)}</p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <button onClick={() => openEdit(goal)} className="text-indigo-500 opacity-80 hover:opacity-100"><Settings size={18}/></button>
+                      <button onClick={() => openEdit(goal)} className="text-indigo-400 opacity-80 hover:opacity-100"><Settings size={18}/></button>
                       <button onClick={() => deleteGoal(goal.id)} className="text-rose-500 opacity-80 hover:opacity-100"><Trash2 size={18}/></button>
                     </div>
                   </div>
-                  
                   <div className="flex justify-between items-end mb-2 mt-2 text-sm">
                     <span className="font-semibold text-emerald-500">{formatCurrency(goal.currentAmount)} guardado</span>
-                    <span className="font-bold text-indigo-600 dark:text-indigo-400">{progress.toFixed(0)}%</span>
+                    <span className="font-bold text-indigo-400">{progress.toFixed(0)}%</span>
                   </div>
                   <ProgressBar progress={progress} color={goal.color} />
-
-                  <div className="mt-4 pt-4 border-t border-slate-100 dark:border-neutral-700">
+                  <div className="mt-4 pt-4 border-t border-neutral-800">
                     {!isAddingFunds ? (
-                      <button onClick={() => setAddFundsId(goal.id)} className="w-full bg-slate-100 dark:bg-neutral-700/50 text-indigo-600 dark:text-indigo-400 py-2 rounded-xl text-sm font-bold active:scale-95 transition-transform">
-                        + Guardar Valor
-                      </button>
+                      <button onClick={() => setAddFundsId(goal.id)} className="w-full bg-neutral-800 text-indigo-400 py-2 rounded-xl text-sm font-bold active:scale-95 transition-transform">+ Guardar Valor</button>
                     ) : (
-                      <motion.form 
-                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} 
-                        onSubmit={addFundsForm.handleSubmit(onAddFunds)} 
-                        className="flex gap-2"
-                      >
-                        <input {...addFundsForm.register('amount')} type="number" step="0.01" placeholder="R$ 0,00" className="flex-1 p-2 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none text-sm outline-none font-medium text-slate-900 dark:text-white" required autoFocus />
+                      <motion.form initial={{ opacity: 0 }} animate={{ opacity: 1 }} onSubmit={addFundsForm.handleSubmit(onAddFunds)} className="flex gap-2">
+                        <input {...addFundsForm.register('amount')} type="number" step="0.01" placeholder="R$ 0,00" className="flex-1 p-2 rounded-xl bg-neutral-900 border border-neutral-800 text-sm outline-none font-medium text-white" required autoFocus />
                         <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold active:scale-95 transition-transform"><Check size={16}/></button>
-                        <button type="button" onClick={() => setAddFundsId(null)} className="bg-slate-200 dark:bg-neutral-700 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-300"><X size={16}/></button>
+                        <button type="button" onClick={() => setAddFundsId(null)} className="bg-neutral-800 px-3 py-2 rounded-xl text-neutral-400"><X size={16}/></button>
                       </motion.form>
                     )}
                   </div>
@@ -798,121 +727,35 @@
               );
             })}
             {goals.length === 0 && !showForm && (
-              <div className="text-center py-16">
-                <Goal size={64} className="mx-auto text-slate-300 dark:text-neutral-700 mb-4" />
-                <h3 className="text-lg font-semibold text-slate-700 dark:text-neutral-300">Sem objetivos ainda</h3>
-                <button onClick={() => setShowForm(true)} className="mt-6 bg-indigo-600 text-white px-6 py-3 rounded-full font-semibold shadow-lg shadow-indigo-600/30 active:scale-95 transition-all">
-                  Criar primeiro objetivo
-                </button>
-              </div>
+              <div className="text-center py-16"><Goal size={64} className="mx-auto text-neutral-700 mb-4" /><h3 className="text-lg font-semibold text-neutral-300">Sem objetivos ainda</h3><button onClick={() => setShowForm(true)} className="mt-6 bg-indigo-600 text-white px-6 py-3 rounded-full font-semibold shadow-lg shadow-indigo-600/30 active:scale-95 transition-all">Criar primeiro objetivo</button></div>
             )}
           </div>
         </div>
       );
     };
 
-    const DebtCard = ({ debt, onEdit }) => {
-      const { payDebt, deleteDebt } = useAppStore();
-      const [showPay, setShowPay] = useState(false);
-      const { register, handleSubmit, reset } = useForm();
-      const remaining = debt.totalAmount - (debt.amountPaid || 0);
-      const progress = ((debt.amountPaid || 0) / debt.totalAmount) * 100;
-      
-      const onPay = (data) => {
-        const val = parseFloat(data.amount);
-        if(val > 0) {
-           payDebt(debt.id, val);
-           setShowPay(false);
-           reset();
-        }
-      };
-
-      return (
-        <Card className="border-l-4 border-l-rose-500 relative overflow-hidden">
-          <div className="flex justify-between items-start mb-2">
-             <h3 className="font-bold text-lg text-slate-800 dark:text-white">{debt.personOrInstitution}</h3>
-             <div className="flex gap-3">
-               <button onClick={() => onEdit(debt)} className="text-slate-400 hover:text-indigo-500 transition-colors"><Settings size={18}/></button>
-               <button onClick={() => deleteDebt(debt.id)} className="text-slate-400 hover:text-rose-500 transition-colors"><Trash2 size={18}/></button>
-             </div>
-          </div>
-          
-          <div className="flex justify-between text-sm mb-1">
-            <span className="text-slate-500">Valor Total:</span>
-            <span className="font-semibold">{formatCurrency(debt.totalAmount)}</span>
-          </div>
-          <div className="flex justify-between text-sm mb-3">
-            <span className="text-slate-500">Já pago:</span>
-            <span className="font-semibold text-emerald-500">{formatCurrency(debt.amountPaid || 0)}</span>
-          </div>
-          
-          <ProgressBar progress={progress} color={remaining === 0 ? "bg-emerald-500" : "bg-rose-500"} />
-          
-          <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100 dark:border-neutral-700">
-             <div className="text-sm font-bold text-rose-500 dark:text-rose-400">
-                {remaining > 0 ? `Falta ${formatCurrency(remaining)}` : ''}
-             </div>
-             {remaining > 0 ? (
-               <button onClick={() => setShowPay(!showPay)} className="bg-rose-100 text-rose-600 dark:bg-rose-900/30 dark:text-rose-400 px-3 py-1 rounded-full text-xs font-bold active:scale-95 transition-transform">
-                 Pagar Valor
-               </button>
-             ) : (
-               <span className="text-emerald-500 font-bold text-sm flex items-center gap-1 w-full justify-center"><Check size={16}/> Dívida Quitada!</span>
-             )}
-          </div>
-          
-          <AnimatePresence>
-            {showPay && (
-               <motion.form 
-                 initial={{ height: 0, opacity: 0, marginTop: 0 }} 
-                 animate={{ height: 'auto', opacity: 1, marginTop: 16 }} 
-                 exit={{ height: 0, opacity: 0, marginTop: 0 }} 
-                 onSubmit={handleSubmit(onPay)} 
-                 className="flex gap-2 overflow-hidden"
-               >
-                 <input {...register('amount')} type="number" step="0.01" max={remaining} placeholder="R$ 0,00" className="flex-1 p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none text-sm outline-none font-medium text-slate-900 dark:text-white" required autoFocus />
-                 <button type="submit" className="bg-rose-500 text-white px-4 py-2 rounded-xl text-sm font-bold active:scale-95 transition-transform">Confirmar</button>
-               </motion.form>
-            )}
-          </AnimatePresence>
-        </Card>
-      );
-    };
-
     const DebtsView = () => {
-      const { debts, addDebt, updateDebt } = useAppStore();
+      const { debts, addDebt, updateDebt, deleteDebt, payDebt } = useAppStore();
       const [showForm, setShowForm] = useState(false);
       const [editingDebtId, setEditingDebtId] = useState(null);
       const { register, handleSubmit, reset, setValue } = useForm();
+      const [payDebtId, setPayDebtId] = useState(null);
+      const payForm = useForm();
 
-      const openEdit = (debt) => {
-        setEditingDebtId(debt.id);
-        setValue('personOrInstitution', debt.personOrInstitution);
-        setValue('totalAmount', debt.totalAmount);
-        setShowForm(true);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      };
-
-      const closeForm = () => {
-        setShowForm(false);
-        setEditingDebtId(null);
-        reset();
-      };
-
+      const openEdit = (debt) => { setEditingDebtId(debt.id); setValue('personOrInstitution', debt.personOrInstitution); setValue('totalAmount', debt.totalAmount); setShowForm(true); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+      const closeForm = () => { setShowForm(false); setEditingDebtId(null); reset(); };
       const onSubmit = (data) => {
-        if (editingDebtId) {
-          updateDebt(editingDebtId, { ...debts.find(d => d.id === editingDebtId), personOrInstitution: data.personOrInstitution, totalAmount: parseFloat(data.totalAmount) });
-        } else {
-          addDebt({ personOrInstitution: data.personOrInstitution, totalAmount: parseFloat(data.totalAmount) });
-        }
+        if (editingDebtId) updateDebt(editingDebtId, { ...debts.find(d => d.id === editingDebtId), personOrInstitution: data.personOrInstitution, totalAmount: parseFloat(data.totalAmount) });
+        else addDebt({ personOrInstitution: data.personOrInstitution, totalAmount: parseFloat(data.totalAmount) });
         closeForm();
       };
+      const onPay = (data) => { const val = parseFloat(data.amount); if(val > 0) payDebt(payDebtId, val); setPayDebtId(null); payForm.reset(); };
 
       return (
         <div className="pb-24 space-y-6 pt-4 px-4 animate-in fade-in">
           <div className="flex justify-between items-center px-2">
-            <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Dívidas</h1>
-            <button onClick={() => showForm ? closeForm() : setShowForm(true)} className="bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400 px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1">
+            <h1 className="text-2xl font-bold text-white">Dívidas</h1>
+            <button onClick={() => showForm ? closeForm() : setShowForm(true)} className="bg-rose-900/50 text-rose-400 px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-1">
               {showForm ? <X size={16} /> : <Plus size={16} />} {showForm ? 'Cancelar' : 'Nova'}
             </button>
           </div>
@@ -920,11 +763,11 @@
           <AnimatePresence>
             {showForm && (
               <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                <Card className="mb-6 border-rose-100 dark:border-rose-900/50">
-                  <h3 className="font-bold mb-3 text-slate-800 dark:text-white">{editingDebtId ? 'Editar Dívida' : 'Nova Dívida'}</h3>
+                <Card className="mb-6 border-rose-900/50">
+                  <h3 className="font-bold mb-3 text-white">{editingDebtId ? 'Editar Dívida' : 'Nova Dívida'}</h3>
                   <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                    <input {...register('personOrInstitution', { required: true })} placeholder="Para quem você deve? (Nome)" className="w-full p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none outline-none font-medium text-slate-900 dark:text-white placeholder:font-normal placeholder-slate-400" />
-                    <input {...register('totalAmount', { required: true })} type="number" step="0.01" placeholder="Valor Total (R$)" className="w-full p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border-none outline-none font-medium text-slate-900 dark:text-white placeholder:font-normal placeholder-slate-400" />
+                    <input {...register('personOrInstitution', { required: true })} placeholder="Para quem você deve? (Nome)" className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-800 outline-none font-medium text-white" />
+                    <input {...register('totalAmount', { required: true })} type="number" step="0.01" placeholder="Valor Total (R$)" className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-800 outline-none font-medium text-white" />
                     <button type="submit" className="w-full bg-rose-500 text-white font-semibold p-3 rounded-xl shadow-lg shadow-rose-500/30 active:scale-95 transition-transform">{editingDebtId ? 'Salvar Alterações' : 'Registrar Dívida'}</button>
                   </form>
                 </Card>
@@ -933,16 +776,40 @@
           </AnimatePresence>
 
           <div className="space-y-4">
-            {debts.map(debt => <DebtCard key={debt.id} debt={debt} onEdit={openEdit} />)}
+            {debts.map(debt => {
+               const remaining = debt.totalAmount - (debt.amountPaid || 0);
+               const progress = ((debt.amountPaid || 0) / debt.totalAmount) * 100;
+               return (
+                <Card key={debt.id} className="border-l-4 border-l-rose-500">
+                  <div className="flex justify-between items-start mb-2">
+                     <h3 className="font-bold text-lg text-white">{debt.personOrInstitution}</h3>
+                     <div className="flex gap-3">
+                       <button onClick={() => openEdit(debt)} className="text-neutral-400 hover:text-indigo-400"><Settings size={18}/></button>
+                       <button onClick={() => deleteDebt(debt.id)} className="text-neutral-400 hover:text-rose-500"><Trash2 size={18}/></button>
+                     </div>
+                  </div>
+                  <div className="flex justify-between text-sm mb-1"><span className="text-neutral-500">Valor Total:</span><span className="font-semibold">{formatCurrency(debt.totalAmount)}</span></div>
+                  <div className="flex justify-between text-sm mb-3"><span className="text-neutral-500">Já pago:</span><span className="font-semibold text-emerald-500">{formatCurrency(debt.amountPaid || 0)}</span></div>
+                  <ProgressBar progress={progress} color={remaining === 0 ? "bg-emerald-500" : "bg-rose-500"} />
+                  <div className="flex justify-between items-center mt-3 pt-3 border-t border-neutral-800">
+                     <div className="text-sm font-bold text-rose-400">{remaining > 0 ? `Falta ${formatCurrency(remaining)}` : ''}</div>
+                     {remaining > 0 ? (
+                       <button onClick={() => setPayDebtId(payDebtId === debt.id ? null : debt.id)} className="bg-rose-900/30 text-rose-400 px-3 py-1 rounded-full text-xs font-bold active:scale-95 transition-transform">Pagar Valor</button>
+                     ) : <span className="text-emerald-500 font-bold text-sm flex items-center gap-1 w-full justify-center"><Check size={16}/> Dívida Quitada!</span>}
+                  </div>
+                  <AnimatePresence>
+                    {payDebtId === debt.id && (
+                       <motion.form initial={{ height: 0, opacity: 0, marginTop: 0 }} animate={{ height: 'auto', opacity: 1, marginTop: 16 }} exit={{ height: 0, opacity: 0, marginTop: 0 }} onSubmit={payForm.handleSubmit(onPay)} className="flex gap-2 overflow-hidden">
+                         <input {...payForm.register('amount')} type="number" step="0.01" max={remaining} placeholder="R$ 0,00" className="flex-1 p-3 rounded-xl bg-neutral-900 border border-neutral-800 text-sm outline-none font-medium text-white" required autoFocus />
+                         <button type="submit" className="bg-rose-500 text-white px-4 py-2 rounded-xl text-sm font-bold active:scale-95 transition-transform">Confirmar</button>
+                       </motion.form>
+                    )}
+                  </AnimatePresence>
+                </Card>
+               )
+            })}
             {debts.length === 0 && !showForm && (
-              <div className="text-center py-16">
-                <FileText size={64} className="mx-auto text-slate-300 dark:text-neutral-700 mb-4" />
-                <h3 className="text-lg font-semibold text-slate-700 dark:text-neutral-300">Nenhuma dívida!</h3>
-                <p className="text-slate-500 text-sm mt-2">Você não possui dívidas cadastradas. Que alívio!</p>
-                <button onClick={() => setShowForm(true)} className="mt-6 bg-rose-500 text-white px-6 py-3 rounded-full font-semibold shadow-lg shadow-rose-500/30 active:scale-95 transition-all">
-                  Registrar uma dívida
-                </button>
-              </div>
+              <div className="text-center py-16"><FileText size={64} className="mx-auto text-neutral-700 mb-4" /><h3 className="text-lg font-semibold text-neutral-300">Nenhuma dívida!</h3><button onClick={() => setShowForm(true)} className="mt-6 bg-rose-500 text-white px-6 py-3 rounded-full font-semibold shadow-lg shadow-rose-500/30 active:scale-95 transition-all">Registrar uma dívida</button></div>
             )}
           </div>
         </div>
@@ -950,72 +817,39 @@
     };
 
     const SettingsView = () => {
-      const { isDark, toggleTheme, exportData, importData, clearData, setCurrentView } = useAppStore();
+      const { exportData, importData, clearData, setCurrentView } = useAppStore();
       const fileInputRef = React.useRef(null);
       const [showConfirmDelete, setShowConfirmDelete] = useState(false);
 
       const handleExport = async () => {
         const jsonStr = await exportData();
-        const blob = new Blob([jsonStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `finance_backup_${format(new Date(), 'yyyy-MM-dd')}.json`;
-        a.click(); URL.revokeObjectURL(url);
-      };
-
-      const handleImport = (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = async (e) => await importData(e.target.result);
-        reader.readAsText(file);
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([jsonStr], { type: 'application/json' })); a.download = `finance_backup_${format(new Date(), 'yyyy-MM-dd')}.json`; a.click();
       };
 
       return (
         <div className="pb-24 space-y-6 pt-4 px-4 animate-in fade-in">
           <div className="flex items-center gap-3 px-2">
-            <button onClick={() => setCurrentView('dashboard')} className="p-2 -ml-2 bg-slate-200 dark:bg-neutral-800 rounded-full text-slate-600 dark:text-slate-300 active:scale-95 transition-transform">
-              <ChevronLeft size={20} />
-            </button>
-            <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Configurações</h1>
+            <button onClick={() => setCurrentView('dashboard')} className="p-2 -ml-2 bg-neutral-800 rounded-full text-neutral-300"><ChevronLeft size={20} /></button>
+            <h1 className="text-2xl font-bold text-white">Configurações</h1>
           </div>
-
           <div className="space-y-4">
-            <Card className="!p-0 overflow-hidden divide-y divide-slate-100 dark:divide-neutral-700/50">
-              <div className="p-4 flex justify-between items-center bg-slate-50/50 dark:bg-neutral-800/50">
-                <div className="flex items-center gap-3">{isDark ? <Moon className="text-indigo-500" /> : <Sun className="text-orange-500" />}<span className="font-medium text-slate-800 dark:text-white">Modo Escuro</span></div>
-                <button onClick={toggleTheme} className={`w-12 h-6 rounded-full p-1 transition-colors ${isDark ? 'bg-indigo-500' : 'bg-slate-300'}`}>
-                  <motion.div layout className="w-4 h-4 bg-white rounded-full shadow-sm" animate={{ x: isDark ? 24 : 0 }} />
-                </button>
-              </div>
-              <div onClick={handleExport} className="p-4 flex items-center justify-between cursor-pointer active:bg-slate-50 dark:active:bg-neutral-700/50">
-                <div className="flex items-center gap-3"><Download className="text-emerald-500" /><span className="font-medium text-slate-800 dark:text-white">Exportar Backup</span></div><ChevronRight className="text-slate-400" size={20} />
-              </div>
-              <div onClick={() => fileInputRef.current?.click()} className="p-4 flex items-center justify-between cursor-pointer active:bg-slate-50 dark:active:bg-neutral-700/50">
-                <div className="flex items-center gap-3"><Upload className="text-amber-500" /><span className="font-medium text-slate-800 dark:text-white">Importar Backup</span></div><ChevronRight className="text-slate-400" size={20} />
-                <input type="file" accept=".json" className="hidden" ref={fileInputRef} onChange={handleImport} />
-              </div>
+            <Card className="!p-0 overflow-hidden divide-y divide-neutral-800">
+              <div onClick={handleExport} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800"><div className="flex items-center gap-3"><Download className="text-emerald-500" /><span className="font-medium text-white">Exportar Backup</span></div><ChevronRight className="text-neutral-500" size={20} /></div>
+              <div onClick={() => fileInputRef.current?.click()} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800"><div className="flex items-center gap-3"><Upload className="text-amber-500" /><span className="font-medium text-white">Importar Backup</span></div><ChevronRight className="text-neutral-500" size={20} /><input type="file" accept=".json" className="hidden" ref={fileInputRef} onChange={(e) => { if(e.target.files?.[0]){ const r = new FileReader(); r.onload = async(ev) => await importData(ev.target.result); r.readAsText(e.target.files[0]); } }} /></div>
             </Card>
-
-            <Card className="!p-0 border-rose-100 dark:border-rose-900/30">
+            <Card className="!p-0 border-rose-900/30">
               {!showConfirmDelete ? (
-                <div onClick={() => setShowConfirmDelete(true)} className="p-4 flex items-center gap-3 cursor-pointer text-rose-500">
-                  <Trash2 /><span className="font-medium">Apagar todos os dados</span>
-                </div>
+                <div onClick={() => setShowConfirmDelete(true)} className="p-4 flex items-center gap-3 cursor-pointer text-rose-500"><Trash2 /><span className="font-medium">Apagar todos os dados</span></div>
               ) : (
-                <div className="p-4 flex flex-col gap-4 bg-rose-50/50 dark:bg-rose-900/10">
-                  <div className="flex items-start gap-3 text-rose-600 dark:text-rose-400"><AlertCircle size={20} className="shrink-0 mt-0.5" /><span className="font-medium text-sm">Tem certeza? Isso apagará tudo permanentemente.</span></div>
+                <div className="p-4 flex flex-col gap-4 bg-rose-900/10">
+                  <div className="flex items-start gap-3 text-rose-400"><AlertCircle size={20} className="shrink-0 mt-0.5" /><span className="font-medium text-sm">Tem certeza? Isso apagará tudo permanentemente.</span></div>
                   <div className="flex gap-2">
-                    <button onClick={() => setShowConfirmDelete(false)} className="flex-1 py-2.5 bg-white dark:bg-neutral-800 rounded-xl font-medium border border-slate-200 dark:border-neutral-700">Cancelar</button>
-                    <button onClick={() => { clearData(); setShowConfirmDelete(false); }} className="flex-1 py-2.5 bg-rose-500 text-white rounded-xl font-medium">Apagar Tudo</button>
+                    <button onClick={() => setShowConfirmDelete(false)} className="flex-1 py-2.5 bg-neutral-800 rounded-xl font-medium border border-neutral-700">Cancelar</button>
+                    <button onClick={() => { clearData(); setShowConfirmDelete(false); }} className="flex-1 py-2.5 bg-rose-500 text-white rounded-xl font-medium">Apagar</button>
                   </div>
                 </div>
               )}
             </Card>
-          </div>
-          <div className="mt-8 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-3xl text-indigo-800 dark:text-indigo-200 text-sm">
-            <h4 className="font-bold flex items-center gap-2 mb-2"><Info size={16}/> Sobre o App</h4>
-            <p><strong>100% Offline:</strong> Seus dados ficam armazenados de forma criptografada apenas no seu aparelho.</p>
           </div>
         </div>
       );
@@ -1024,89 +858,59 @@
     const AddTransactionSheet = () => {
       const { isBottomSheetOpen, setBottomSheetOpen, categories, addTransaction, updateTransaction, editingTx } = useAppStore();
       const [quickText, setQuickText] = useState('');
-      
-      const { register, handleSubmit, reset, setValue, watch } = useForm({
-        defaultValues: { type: 'expense', amount: '', categoryId: '', description: '', date: new Date().toISOString().substring(0, 10) }
-      });
+      const { register, handleSubmit, reset, setValue, watch } = useForm({ defaultValues: { type: 'expense', amount: '', categoryId: '', description: '', date: new Date().toISOString().substring(0, 10) } });
       const type = watch('type');
-      const filteredCategories = categories.filter(c => c.type === type);
+      const filteredCategories = categories.filter(c => c.type === type && c.name !== 'Objetivos'); // Esconde a categoria de sistema
 
       useEffect(() => {
-        if (editingTx) {
-          setValue('type', editingTx.type);
-          setValue('amount', editingTx.amount.toString());
-          setValue('categoryId', editingTx.categoryId);
-          setValue('description', editingTx.description);
-          setValue('date', editingTx.date.substring(0, 10));
-        } else if (!isBottomSheetOpen) {
-          reset();
-          setQuickText('');
-        }
+        if (editingTx) { setValue('type', editingTx.type); setValue('amount', editingTx.amount.toString()); setValue('categoryId', editingTx.categoryId); setValue('description', editingTx.description); setValue('date', editingTx.date.substring(0, 10)); }
+        else if (!isBottomSheetOpen) { reset(); setQuickText(''); }
       }, [editingTx, isBottomSheetOpen, setValue, reset]);
 
       useEffect(() => {
         if (quickText.length > 3) {
           const parsed = parseQuickEntry(quickText, categories);
-          if (parsed) {
-            setValue('description', parsed.description || '');
-            setValue('amount', parsed.amount?.toString() || '');
-            setValue('categoryId', parsed.categoryId || '');
-            setValue('type', parsed.type || 'expense');
-          }
+          if (parsed) { setValue('description', parsed.description || ''); setValue('amount', parsed.amount?.toString() || ''); setValue('categoryId', parsed.categoryId || ''); setValue('type', parsed.type || 'expense'); }
         }
       }, [quickText, categories, setValue]);
-
-      const onSubmit = (data) => {
-        if (!data.amount || !data.categoryId || !data.description) return;
-        const payload = {
-          amount: parseFloat(data.amount), categoryId: data.categoryId, description: data.description,
-          date: new Date(data.date).toISOString(), type: data.type, isRecurring: false
-        };
-        if (editingTx) updateTransaction(editingTx.id, payload);
-        else addTransaction(payload);
-        
-        setQuickText(''); reset(); setBottomSheetOpen(false);
-      };
 
       return (
         <AnimatePresence>
           {isBottomSheetOpen && (
             <>
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40" onClick={() => setBottomSheetOpen(false)} />
-              <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 25, stiffness: 200 }} className="fixed bottom-0 left-0 right-0 bg-white dark:bg-neutral-900 rounded-t-[2rem] z-50 p-6 shadow-2xl h-[85vh] overflow-y-auto">
-                <div className="w-12 h-1.5 bg-slate-200 dark:bg-neutral-700 rounded-full mx-auto mb-6" />
-                <h2 className="text-xl font-bold mb-4 text-slate-800 dark:text-white">{editingTx ? 'Editar Movimentação' : 'Nova Movimentação'}</h2>
-                
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" onClick={() => setBottomSheetOpen(false)} />
+              <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 25, stiffness: 200 }} className="fixed bottom-0 left-0 right-0 bg-neutral-900 rounded-t-[2rem] z-50 p-6 shadow-2xl h-[85vh] overflow-y-auto">
+                <div className="w-12 h-1.5 bg-neutral-700 rounded-full mx-auto mb-6" />
+                <h2 className="text-xl font-bold mb-4 text-white">{editingTx ? 'Editar Movimentação' : 'Nova Movimentação'}</h2>
                 {!editingTx && (
                   <div className="mb-6 relative">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><BrainCircuit className="text-indigo-400" size={20} /></div>
-                    <input type="text" placeholder="Lançamento Mágico (ex: Uber 25)" value={quickText} onChange={(e) => setQuickText(e.target.value)} className="w-full bg-indigo-50 dark:bg-indigo-900/20 text-indigo-900 dark:text-indigo-100 placeholder-indigo-300 dark:placeholder-indigo-700/50 rounded-2xl py-4 pl-12 pr-4 font-medium outline-none" />
+                    <input type="text" placeholder="Lançamento Mágico (ex: Uber 25)" value={quickText} onChange={(e) => setQuickText(e.target.value)} className="w-full bg-indigo-900/20 text-indigo-100 placeholder-indigo-700/50 rounded-2xl py-4 pl-12 pr-4 font-medium outline-none border border-indigo-900/50" />
                   </div>
                 )}
-
-                <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                  <div className="flex bg-slate-100 dark:bg-neutral-800 rounded-2xl p-1">
-                    <button type="button" onClick={() => setValue('type', 'expense')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'expense' ? 'bg-white dark:bg-neutral-700 shadow text-rose-500' : 'text-slate-500'}`}>Gasto</button>
-                    <button type="button" onClick={() => setValue('type', 'income')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'income' ? 'bg-white dark:bg-neutral-700 shadow text-emerald-500' : 'text-slate-500'}`}>Ganho</button>
+                <form onSubmit={handleSubmit((data) => {
+                  const payload = { amount: parseFloat(data.amount), categoryId: data.categoryId, description: data.description, date: new Date(data.date).toISOString(), type: data.type, isRecurring: false };
+                  if (editingTx) updateTransaction(editingTx.id, payload); else addTransaction(payload);
+                  setBottomSheetOpen(false);
+                })} className="space-y-4">
+                  <div className="flex bg-neutral-800 rounded-2xl p-1">
+                    <button type="button" onClick={() => setValue('type', 'expense')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'expense' ? 'bg-neutral-700 shadow text-rose-500' : 'text-neutral-400'}`}>Gasto</button>
+                    <button type="button" onClick={() => setValue('type', 'income')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'income' ? 'bg-neutral-700 shadow text-emerald-500' : 'text-neutral-400'}`}>Ganho</button>
                   </div>
                   <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">R$</span>
-                    <input {...register('amount')} type="number" step="0.01" placeholder="0,00" className="w-full bg-slate-50 dark:bg-neutral-800 rounded-2xl py-4 pl-12 pr-4 text-2xl font-bold outline-none text-slate-900 dark:text-white" required />
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500 font-bold">R$</span>
+                    <input {...register('amount')} type="number" step="0.01" placeholder="0,00" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 pl-12 pr-4 text-2xl font-bold outline-none text-white" required />
                   </div>
-                  <input {...register('description')} type="text" placeholder="Descrição" className="w-full bg-slate-50 dark:bg-neutral-800 rounded-2xl py-4 px-4 outline-none font-medium text-slate-900 dark:text-white placeholder:font-normal placeholder-slate-400" required />
-                  
+                  <input {...register('description')} type="text" placeholder="Descrição" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 px-4 outline-none font-medium text-white placeholder-neutral-500" required />
                   <div className="grid grid-cols-4 gap-2">
                     {filteredCategories.map(cat => (
-                      <div key={cat.id} onClick={() => setValue('categoryId', cat.id)} className={`cursor-pointer flex flex-col items-center justify-center p-3 rounded-2xl ${watch('categoryId') === cat.id ? 'bg-indigo-100 dark:bg-indigo-900/50 border-indigo-500' : 'bg-slate-50 dark:bg-neutral-800 border-transparent'} border`}>
-                        <span className="text-2xl mb-1">{cat.emoji}</span>
-                        <span className="text-[10px] font-medium text-center leading-tight text-slate-600 dark:text-slate-400">{cat.name}</span>
+                      <div key={cat.id} onClick={() => setValue('categoryId', cat.id)} className={`cursor-pointer flex flex-col items-center justify-center p-3 rounded-2xl ${watch('categoryId') === cat.id ? 'bg-indigo-900/50 border-indigo-500' : 'bg-neutral-800 border-transparent'} border`}>
+                        <span className="text-2xl mb-1">{cat.emoji}</span><span className="text-[10px] font-medium text-center leading-tight text-neutral-400">{cat.name}</span>
                       </div>
                     ))}
                   </div>
-                  <input {...register('date')} type="date" className="w-full bg-slate-50 dark:bg-neutral-800 rounded-2xl py-4 px-4 text-slate-900 dark:text-white font-medium outline-none" required />
-                  <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl text-lg mt-4 shadow-lg shadow-indigo-600/30 active:scale-95 transition-transform">
-                    {editingTx ? 'Salvar Alterações' : 'Registrar'}
-                  </button>
+                  <input {...register('date')} type="date" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 px-4 text-white font-medium outline-none" required />
+                  <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl text-lg mt-4 shadow-lg active:scale-95">{editingTx ? 'Salvar Alterações' : 'Salvar'}</button>
                 </form>
               </motion.div>
             </>
@@ -1119,30 +923,65 @@
       const { currentView, setCurrentView, setBottomSheetOpen } = useAppStore();
       const navItems = [
         { id: 'dashboard', icon: Home, label: 'Início' },
-        { id: 'transactions', icon: PieChart, label: 'Gastos' },
+        { id: 'transactions', icon: PieChart, label: 'Extrato' },
         { id: 'add', icon: Plus, label: '', isFab: true },
+        { id: 'goals', icon: Target, label: 'Metas' },
         { id: 'debts', icon: FileText, label: 'Dívidas' },
-        { id: 'goals', icon: Target, label: 'Objetivos' },
       ];
 
       return (
-        <div className="fixed bottom-0 w-full max-w-md mx-auto bg-white/80 dark:bg-neutral-900/80 backdrop-blur-xl border-t border-slate-100 dark:border-neutral-800 px-6 py-3 flex justify-between items-center z-30 pb-safe">
-          {navItems.map((item) => {
+        <div className="fixed bottom-0 w-full max-w-md mx-auto bg-neutral-900/90 backdrop-blur-xl border-t border-neutral-800 px-2 py-2 flex justify-between items-center z-30 pb-safe">
+          {navItems.map((item, index) => {
             if (item.isFab) {
-              return (
-                <motion.button key="fab" whileTap={{ scale: 0.9 }} onClick={() => setBottomSheetOpen(true)} className="bg-indigo-600 text-white p-4 rounded-full shadow-lg shadow-indigo-600/40 -mt-8 relative z-10 transition-transform hover:scale-105">
-                  <Plus size={24} />
-                </motion.button>
-              );
+               return (
+                 <motion.button key="fab" whileTap={{ scale: 0.9 }} onClick={() => setBottomSheetOpen(true)} className="bg-indigo-600 text-white p-3 rounded-full shadow-lg shadow-indigo-600/30 -mt-6 mx-1 relative z-10">
+                   <Plus size={24} />
+                 </motion.button>
+               );
             }
             const isActive = currentView === item.id;
             return (
-              <button key={item.id} onClick={() => setCurrentView(item.id)} className={`flex flex-col items-center gap-1 p-2 ${isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-neutral-500'} transition-colors`}>
-                <item.icon size={24} strokeWidth={isActive ? 2.5 : 2} />
-                <span className="text-[10px] font-medium">{item.label}</span>
+              <button key={item.id} onClick={() => setCurrentView(item.id)} className={`flex flex-col items-center flex-1 p-1 ${isActive ? 'text-indigo-400' : 'text-neutral-500'}`}>
+                <item.icon size={22} strokeWidth={isActive ? 2.5 : 2} />
+                <span className="text-[9px] font-medium mt-1">{item.label}</span>
               </button>
             );
           })}
+        </div>
+      );
+    };
+
+    const InstallPrompt = () => {
+      const [showPrompt, setShowPrompt] = useState(false);
+      const [isIOS, setIsIOS] = useState(false);
+      const [deferredPrompt, setDeferredPrompt] = useState(null);
+
+      useEffect(() => {
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+        if (isStandalone) return;
+
+        const isIOSDevice = /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
+        setIsIOS(isIOSDevice);
+        if (isIOSDevice) setTimeout(() => setShowPrompt(true), 3000);
+
+        const handleBeforeInstallPrompt = (e) => { e.preventDefault(); setDeferredPrompt(e); setTimeout(() => setShowPrompt(true), 3000); };
+        window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+        return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      }, []);
+
+      if (!showPrompt) return null;
+      const handleInstall = async () => { if (deferredPrompt) { deferredPrompt.prompt(); const { outcome } = await deferredPrompt.userChoice; if (outcome === 'accepted') setShowPrompt(false); setDeferredPrompt(null); } };
+
+      return (
+        <div className="fixed bottom-24 left-4 right-4 bg-indigo-600 text-white p-4 rounded-2xl shadow-xl z-50 animate-in slide-in-from-bottom-10">
+          <button onClick={() => setShowPrompt(false)} className="absolute top-2 right-2 p-1"><X size={16}/></button>
+          <p className="font-bold text-lg mb-1 flex items-center gap-2"><Smartphone size={20}/> Instalar App</p>
+          <p className="text-sm text-indigo-100 mb-3">Tenha acesso rápido e funcionamento offline.</p>
+          {isIOS ? (
+             <div className="text-xs bg-indigo-900/50 p-2 rounded-xl">Toque em <b>Compartilhar</b> e escolha <b>Adicionar à Tela de Início</b>.</div>
+          ) : (
+             <button onClick={handleInstall} className="w-full bg-white text-indigo-600 font-bold py-2 rounded-xl">Instalar Agora</button>
+          )}
         </div>
       );
     };
@@ -1153,13 +992,13 @@
 
       useEffect(() => { initialize().then(() => setIsLoaded(true)); }, [initialize]);
 
-      if (!isLoaded) return <div className="min-h-screen bg-slate-50 dark:bg-neutral-950 flex items-center justify-center"><motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}><Wallet size={48} className="text-indigo-600" /></motion.div></div>;
+      if (!isLoaded) return <div className="min-h-screen flex items-center justify-center"><Wallet size={48} className="text-indigo-600 animate-pulse" /></div>;
 
       return (
         <div className="min-h-screen mx-auto max-w-md relative shadow-2xl overflow-x-hidden">
           <main className="min-h-screen">
             {currentView === 'dashboard' && <DashboardView />}
-            {currentView === 'transactions' && <TransactionsView />}
+            {currentView === 'transactions' && <TransactionsTabbedView />}
             {currentView === 'goals' && <GoalsView />}
             {currentView === 'debts' && <DebtsView />}
             {currentView === 'settings' && <SettingsView />}
@@ -1167,6 +1006,7 @@
           <BottomNav />
           <AddTransactionSheet />
           <Snackbar />
+          <InstallPrompt />
         </div>
       );
     };
