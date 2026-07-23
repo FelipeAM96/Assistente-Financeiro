@@ -66,7 +66,7 @@
   </script>
 
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useMemo } from 'react';
+    import React, { useState, useEffect, useMemo, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
     import { 
       Home, PieChart, Target, Settings, Plus, X, 
@@ -190,6 +190,92 @@
       return { description: descriptionPart.charAt(0).toUpperCase() + descriptionPart.slice(1), amount, categoryId, type, date: new Date().toISOString() };
     };
 
+    // Parser CSV Inteligente (Inter, Nubank, etc)
+    const parseCSVTransactions = (csvText, categories) => {
+      const lines = csvText.trim().split('\n');
+      if (lines.length < 2) return [];
+      const header = lines[0].toLowerCase();
+      
+      const isNubankCC = header.includes('date') && header.includes('title') && header.includes('amount');
+      const transactions = [];
+      const dateRegex = /(\d{2})[\/\-](\d{2})[\/\-](\d{4})/;
+      const isoDateRegex = /(\d{4})-(\d{2})-(\d{2})/;
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const parts = line.split(/[;,](?=(?:(?:[^"]*"){2})*[^"]*$)/).map(p => p.trim().replace(/^"|"$/g, ''));
+        let dateStr = null;
+        let amountStr = null;
+        let descStr = '';
+
+        if (isNubankCC && parts.length >= 4) {
+          dateStr = parts[0];
+          descStr = parts[2] + (parts[1] ? ` (${parts[1]})` : '');
+          amountStr = parts[3];
+        } else {
+          const descParts = [];
+          parts.forEach(part => {
+            if (!dateStr && (dateRegex.test(part) || isoDateRegex.test(part))) dateStr = part;
+            else if (!amountStr && (/^R?\$\s*-?[\d.,]+$/.test(part) || /^-?[\d]+(?:[.,]\d{2})?$/.test(part.replace(/[R$\s]/g, ''))) && /[1-9]/.test(part)) amountStr = part;
+            else if (part.length > 2 && !dateRegex.test(part) && !/^[\d.,]+$/.test(part)) descParts.push(part);
+          });
+          descStr = descParts.join(' - ');
+        }
+
+        if (!dateStr || !amountStr) continue;
+
+        let day, month, year;
+        if (dateRegex.test(dateStr)) {
+          const match = dateStr.match(dateRegex);
+          day = match[1]; month = match[2]; year = match[3];
+        } else if (isoDateRegex.test(dateStr)) {
+          const match = dateStr.match(isoDateRegex);
+          year = match[1]; month = match[2]; day = match[3];
+        } else {
+          continue;
+        }
+        const dateObj = new Date(`${year}-${month}-${day}T12:00:00Z`);
+
+        let cleanAmount = amountStr.replace(/[R$\s]/g, '');
+        if (cleanAmount.includes(',') && cleanAmount.includes('.')) {
+          cleanAmount = cleanAmount.replace(/\./g, '').replace(',', '.');
+        } else if (cleanAmount.includes(',')) {
+          cleanAmount = cleanAmount.replace(',', '.');
+        }
+        let amount = parseFloat(cleanAmount);
+        if (isNaN(amount)) continue;
+
+        let type = 'expense';
+        if (isNubankCC) {
+          type = amount < 0 ? 'income' : 'expense';
+        } else {
+          type = amount < 0 ? 'expense' : 'income';
+        }
+        amount = Math.abs(amount);
+
+        let description = descStr || 'Importado CSV';
+        const descLower = description.toLowerCase();
+        let categoryId = categories.find(c => c.type === type)?.id;
+
+        if (descLower.includes('mercado') || descLower.includes('supermercado') || descLower.includes('atacad')) categoryId = categories.find(c => c.name === 'Mercado')?.id;
+        else if (descLower.includes('uber') || descLower.includes('99') || descLower.includes('posto')) categoryId = categories.find(c => c.name === 'Transporte')?.id;
+        else if (descLower.includes('ifood') || descLower.includes('restaurante') || descLower.includes('padaria') || descLower.includes('lanchonete')) categoryId = categories.find(c => c.name === 'Alimentação')?.id;
+        else if (descLower.includes('salário') || descLower.includes('pagamento') || descLower.includes('remuneração')) { categoryId = categories.find(c => c.name === 'Salário')?.id; type = 'income'; }
+
+        transactions.push({
+          id: generateId(),
+          description: description.substring(0, 40),
+          amount,
+          type,
+          categoryId,
+          date: dateObj.toISOString()
+        });
+      }
+      return transactions;
+    };
+
     const useAppStore = create((set, get) => ({
       currentView: 'dashboard',
       currentDate: new Date(),
@@ -221,6 +307,13 @@
         const txs = await dbStore.toArray('transactions');
         set({ transactions: txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
         get().showSnackbar('Movimentação adicionada!');
+      },
+      
+      bulkAddTransactions: async (newTxs) => {
+        await dbStore.bulkAdd('transactions', newTxs);
+        const txs = await dbStore.toArray('transactions');
+        set({ transactions: txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) });
+        get().showSnackbar(`${newTxs.length} registros importados com sucesso!`);
       },
 
       updateTransaction: async (id, tx) => {
@@ -347,24 +440,27 @@
 
     const getAssistantInsights = (transactions, currentDate) => {
       const insights = [];
-      const lastMonthDate = subMonths(currentDate, 1);
       const thisMonthTx = transactions.filter(t => isSameMonth(parseISO(t.date), currentDate));
-      const lastMonthTx = transactions.filter(t => isSameMonth(parseISO(t.date), lastMonthDate));
       
-      const thisMonthExpenses = thisMonthTx.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
-      const lastMonthExpenses = lastMonthTx.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
-      
-      if (lastMonthExpenses > 0) {
-        const diff = lastMonthExpenses - thisMonthExpenses;
-        if (diff > 0 && new Date().getDate() > 15 && isSameMonth(currentDate, new Date())) {
-          insights.push(`Você economizou ${formatCurrency(diff)} este mês! 🎉`);
-        } else if (thisMonthExpenses > lastMonthExpenses) {
-          insights.push(`Seus gastos superaram o mês passado.`);
-        }
+      const income = thisMonthTx.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+      const expense = thisMonthTx.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+      const balance = income - expense;
+
+      if (thisMonthTx.length === 0) {
+        return ["Nenhuma movimentação neste mês."];
       }
 
-      if (thisMonthTx.length === 0) insights.push("Nenhuma movimentação neste mês.");
-      else if (insights.length === 0) insights.push("Tudo sob controle! ✌️");
+      // Regras atualizadas do assistente com base no saldo
+      if (balance < -250) {
+        insights.push("Tá ficando negativo, final do mês resolve, mas não abusa.");
+      } else if (balance >= -250 && balance < 0) {
+        insights.push("Cuidado! É ainda pouco, mas tá negativo.");
+      } else if (balance >= 0 && balance <= 250) {
+        insights.push("Estamos bem, mas não abusa, viuuu!");
+      } else if (balance > 250) {
+        insights.push("Tudo sob controle com seus gastos! ✌️");
+      }
+
       return insights;
     };
 
@@ -374,17 +470,17 @@
 
       useEffect(() => {
         if (insights.length <= 1) return;
-        const interval = setInterval(() => setCurrentIndex(prev => (prev + 1) % insights.length), 5000);
+        const interval = setInterval(() => setCurrentIndex(prev => (prev + 1) % insights.length), 6000);
         return () => clearInterval(interval);
       }, [insights]);
 
       if (transactions.length === 0) return null;
 
       return (
-        <div className="absolute -top-6 right-4 z-10 bg-indigo-500 text-white text-[11px] font-bold py-2 px-3 rounded-2xl rounded-br-sm shadow-lg shadow-indigo-500/30 flex items-center gap-1.5 max-w-[200px]">
-          <BrainCircuit size={14} className="shrink-0 text-indigo-100" />
+        <div className="absolute -top-6 right-4 z-10 bg-indigo-500 text-white text-[11px] font-bold py-2 px-3 rounded-2xl rounded-br-sm shadow-lg shadow-indigo-500/30 flex items-center gap-1.5 max-w-[240px]">
+          <BrainCircuit size={16} className="shrink-0 text-indigo-100" />
           <AnimatePresence mode="wait">
-            <motion.span key={currentIndex} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} className="leading-tight truncate">
+            <motion.span key={currentIndex} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} className="leading-tight">
               {insights[currentIndex]}
             </motion.span>
           </AnimatePresence>
@@ -534,7 +630,6 @@
 
       return (
         <div className="pb-24 space-y-6 pt-4 px-4 animate-in fade-in">
-          {/* Cabeçalho */}
           <div className="flex justify-between items-center px-2">
             <h1 className="text-2xl font-bold text-white">Extrato</h1>
             <div className="flex items-center gap-1 bg-neutral-900 rounded-full shadow-sm px-1 py-1 border border-neutral-800">
@@ -544,7 +639,6 @@
             </div>
           </div>
 
-          {/* Seção: Fixos Mensais (No Topo) */}
           <div>
             <div className="flex justify-between items-center px-2 mb-3">
               <h3 className="font-semibold text-white">Fixos Mensais</h3>
@@ -623,7 +717,6 @@
             </div>
           </div>
 
-          {/* Seção: Movimentações Avulsas (Abaixo dos Fixos) */}
           <div className="pt-4 border-t border-neutral-800/80">
             <h3 className="font-semibold text-white mb-4 px-2">Movimentações</h3>
             <div className="relative mb-4">
@@ -817,13 +910,33 @@
     };
 
     const SettingsView = () => {
-      const { exportData, importData, clearData, setCurrentView } = useAppStore();
-      const fileInputRef = React.useRef(null);
+      const { exportData, importData, clearData, setCurrentView, categories, bulkAddTransactions } = useAppStore();
+      const fileInputRef = useRef(null);
+      const csvInputRef = useRef(null);
       const [showConfirmDelete, setShowConfirmDelete] = useState(false);
 
       const handleExport = async () => {
         const jsonStr = await exportData();
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([jsonStr], { type: 'application/json' })); a.download = `finance_backup_${format(new Date(), 'yyyy-MM-dd')}.json`; a.click();
+      };
+
+      const handleCSVUpload = (e) => {
+        if (e.target.files?.[0]) {
+          const file = e.target.files[0];
+          const r = new FileReader();
+          r.onload = (ev) => {
+            const text = ev.target.result;
+            const newTxs = parseCSVTransactions(text, categories);
+            if (newTxs.length > 0) {
+              bulkAddTransactions(newTxs);
+            } else {
+              useAppStore.getState().showSnackbar('Nenhuma movimentação identificada no CSV.');
+            }
+          };
+          r.readAsText(file, 'UTF-8');
+        }
+        // Reseta o input para permitir importar o mesmo arquivo novamente, se necessário
+        if (csvInputRef.current) csvInputRef.current.value = '';
       };
 
       return (
@@ -833,10 +946,20 @@
             <h1 className="text-2xl font-bold text-white">Configurações</h1>
           </div>
           <div className="space-y-4">
+            
             <Card className="!p-0 overflow-hidden divide-y divide-neutral-800">
-              <div onClick={handleExport} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800"><div className="flex items-center gap-3"><Download className="text-emerald-500" /><span className="font-medium text-white">Exportar Backup</span></div><ChevronRight className="text-neutral-500" size={20} /></div>
-              <div onClick={() => fileInputRef.current?.click()} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800"><div className="flex items-center gap-3"><Upload className="text-amber-500" /><span className="font-medium text-white">Importar Backup</span></div><ChevronRight className="text-neutral-500" size={20} /><input type="file" accept=".json" className="hidden" ref={fileInputRef} onChange={(e) => { if(e.target.files?.[0]){ const r = new FileReader(); r.onload = async(ev) => await importData(ev.target.result); r.readAsText(e.target.files[0]); } }} /></div>
+              <div onClick={() => csvInputRef.current?.click()} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800">
+                <div className="flex items-center gap-3"><FileText className="text-indigo-500" /><span className="font-medium text-white">Importar Extrato/Fatura (CSV)</span></div>
+                <ChevronRight className="text-neutral-500" size={20} />
+                <input type="file" accept=".csv" className="hidden" ref={csvInputRef} onChange={handleCSVUpload} />
+              </div>
             </Card>
+
+            <Card className="!p-0 overflow-hidden divide-y divide-neutral-800">
+              <div onClick={handleExport} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800"><div className="flex items-center gap-3"><Download className="text-emerald-500" /><span className="font-medium text-white">Exportar Backup Completo</span></div><ChevronRight className="text-neutral-500" size={20} /></div>
+              <div onClick={() => fileInputRef.current?.click()} className="p-4 flex items-center justify-between cursor-pointer active:bg-neutral-800"><div className="flex items-center gap-3"><Upload className="text-amber-500" /><span className="font-medium text-white">Importar Backup Completo</span></div><ChevronRight className="text-neutral-500" size={20} /><input type="file" accept=".json" className="hidden" ref={fileInputRef} onChange={(e) => { if(e.target.files?.[0]){ const r = new FileReader(); r.onload = async(ev) => await importData(ev.target.result); r.readAsText(e.target.files[0]); } }} /></div>
+            </Card>
+
             <Card className="!p-0 border-rose-900/30">
               {!showConfirmDelete ? (
                 <div onClick={() => setShowConfirmDelete(true)} className="p-4 flex items-center gap-3 cursor-pointer text-rose-500"><Trash2 /><span className="font-medium">Apagar todos os dados</span></div>
@@ -860,7 +983,7 @@
       const [quickText, setQuickText] = useState('');
       const { register, handleSubmit, reset, setValue, watch } = useForm({ defaultValues: { type: 'expense', amount: '', categoryId: '', description: '', date: new Date().toISOString().substring(0, 10) } });
       const type = watch('type');
-      const filteredCategories = categories.filter(c => c.type === type && c.name !== 'Objetivos'); // Esconde a categoria de sistema
+      const filteredCategories = categories.filter(c => c.type === type && c.name !== 'Objetivos');
 
       useEffect(() => {
         if (editingTx) { setValue('type', editingTx.type); setValue('amount', editingTx.amount.toString()); setValue('categoryId', editingTx.categoryId); setValue('description', editingTx.description); setValue('date', editingTx.date.substring(0, 10)); }
@@ -879,39 +1002,63 @@
           {isBottomSheetOpen && (
             <>
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40" onClick={() => setBottomSheetOpen(false)} />
-              <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 25, stiffness: 200 }} className="fixed bottom-0 left-0 right-0 bg-neutral-900 rounded-t-[2rem] z-50 p-6 shadow-2xl h-[85vh] overflow-y-auto">
-                <div className="w-12 h-1.5 bg-neutral-700 rounded-full mx-auto mb-6" />
-                <h2 className="text-xl font-bold mb-4 text-white">{editingTx ? 'Editar Movimentação' : 'Nova Movimentação'}</h2>
-                {!editingTx && (
-                  <div className="mb-6 relative">
-                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><BrainCircuit className="text-indigo-400" size={20} /></div>
-                    <input type="text" placeholder="Lançamento Mágico (ex: Uber 25)" value={quickText} onChange={(e) => setQuickText(e.target.value)} className="w-full bg-indigo-900/20 text-indigo-100 placeholder-indigo-700/50 rounded-2xl py-4 pl-12 pr-4 font-medium outline-none border border-indigo-900/50" />
-                  </div>
-                )}
-                <form onSubmit={handleSubmit((data) => {
-                  const payload = { amount: parseFloat(data.amount), categoryId: data.categoryId, description: data.description, date: new Date(data.date).toISOString(), type: data.type, isRecurring: false };
-                  if (editingTx) updateTransaction(editingTx.id, payload); else addTransaction(payload);
-                  setBottomSheetOpen(false);
-                })} className="space-y-4">
-                  <div className="flex bg-neutral-800 rounded-2xl p-1">
-                    <button type="button" onClick={() => setValue('type', 'expense')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'expense' ? 'bg-neutral-700 shadow text-rose-500' : 'text-neutral-400'}`}>Gasto</button>
-                    <button type="button" onClick={() => setValue('type', 'income')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'income' ? 'bg-neutral-700 shadow text-emerald-500' : 'text-neutral-400'}`}>Ganho</button>
-                  </div>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500 font-bold">R$</span>
-                    <input {...register('amount')} type="number" step="0.01" placeholder="0,00" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 pl-12 pr-4 text-2xl font-bold outline-none text-white" required />
-                  </div>
-                  <input {...register('description')} type="text" placeholder="Descrição" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 px-4 outline-none font-medium text-white placeholder-neutral-500" required />
-                  <div className="grid grid-cols-4 gap-2">
-                    {filteredCategories.map(cat => (
-                      <div key={cat.id} onClick={() => setValue('categoryId', cat.id)} className={`cursor-pointer flex flex-col items-center justify-center p-3 rounded-2xl ${watch('categoryId') === cat.id ? 'bg-indigo-900/50 border-indigo-500' : 'bg-neutral-800 border-transparent'} border`}>
-                        <span className="text-2xl mb-1">{cat.emoji}</span><span className="text-[10px] font-medium text-center leading-tight text-neutral-400">{cat.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <input {...register('date')} type="date" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 px-4 text-white font-medium outline-none" required />
-                  <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl text-lg mt-4 shadow-lg active:scale-95">{editingTx ? 'Salvar Alterações' : 'Salvar'}</button>
-                </form>
+              
+              <motion.div 
+                initial={{ y: '100%' }} 
+                animate={{ y: 0 }} 
+                exit={{ y: '100%' }} 
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }} 
+                className="fixed bottom-0 left-0 right-0 bg-neutral-900 rounded-t-[2rem] z-50 flex flex-col shadow-2xl h-[85vh]"
+              >
+                {/* Drag Handle Container (arraste aqui para fechar) */}
+                <motion.div 
+                  drag="y" 
+                  dragConstraints={{ top: 0, bottom: 0 }} 
+                  dragElastic={0.2} 
+                  onDragEnd={(e, info) => { 
+                    if (info.offset.y > 60 || info.velocity.y > 200) setBottomSheetOpen(false); 
+                  }} 
+                  className="pt-4 pb-4 w-full flex justify-center cursor-grab active:cursor-grabbing shrink-0"
+                >
+                  <div className="w-14 h-1.5 bg-neutral-700 rounded-full" />
+                </motion.div>
+
+                {/* Conteúdo com scroll independente (não interfere no arraste superior) */}
+                <div className="px-6 pb-6 overflow-y-auto flex-1">
+                  <h2 className="text-xl font-bold mb-4 text-white">{editingTx ? 'Editar Movimentação' : 'Nova Movimentação'}</h2>
+                  
+                  {!editingTx && (
+                    <div className="mb-6 relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><BrainCircuit className="text-indigo-400" size={20} /></div>
+                      <input type="text" placeholder="Lançamento Mágico (ex: Uber 25)" value={quickText} onChange={(e) => setQuickText(e.target.value)} className="w-full bg-indigo-900/20 text-indigo-100 placeholder-indigo-700/50 rounded-2xl py-4 pl-12 pr-4 font-medium outline-none border border-indigo-900/50" />
+                    </div>
+                  )}
+                  
+                  <form onSubmit={handleSubmit((data) => {
+                    const payload = { amount: parseFloat(data.amount), categoryId: data.categoryId, description: data.description, date: new Date(data.date).toISOString(), type: data.type, isRecurring: false };
+                    if (editingTx) updateTransaction(editingTx.id, payload); else addTransaction(payload);
+                    setBottomSheetOpen(false);
+                  })} className="space-y-4">
+                    <div className="flex bg-neutral-800 rounded-2xl p-1">
+                      <button type="button" onClick={() => setValue('type', 'expense')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'expense' ? 'bg-neutral-700 shadow text-rose-500' : 'text-neutral-400'}`}>Gasto</button>
+                      <button type="button" onClick={() => setValue('type', 'income')} className={`flex-1 py-3 text-sm font-semibold rounded-xl ${type === 'income' ? 'bg-neutral-700 shadow text-emerald-500' : 'text-neutral-400'}`}>Ganho</button>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500 font-bold">R$</span>
+                      <input {...register('amount')} type="number" step="0.01" placeholder="0,00" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 pl-12 pr-4 text-2xl font-bold outline-none text-white" required />
+                    </div>
+                    <input {...register('description')} type="text" placeholder="Descrição" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 px-4 outline-none font-medium text-white placeholder-neutral-500" required />
+                    <div className="grid grid-cols-4 gap-2">
+                      {filteredCategories.map(cat => (
+                        <div key={cat.id} onClick={() => setValue('categoryId', cat.id)} className={`cursor-pointer flex flex-col items-center justify-center p-3 rounded-2xl ${watch('categoryId') === cat.id ? 'bg-indigo-900/50 border-indigo-500' : 'bg-neutral-800 border-transparent'} border`}>
+                          <span className="text-2xl mb-1">{cat.emoji}</span><span className="text-[10px] font-medium text-center leading-tight text-neutral-400">{cat.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <input {...register('date')} type="date" className="w-full bg-neutral-800 border border-neutral-700 rounded-2xl py-4 px-4 text-white font-medium outline-none" required />
+                    <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl text-lg mt-4 shadow-lg active:scale-95">{editingTx ? 'Salvar Alterações' : 'Salvar'}</button>
+                  </form>
+                </div>
               </motion.div>
             </>
           )}
