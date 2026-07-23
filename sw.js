@@ -1,4 +1,4 @@
-const CACHE_NAME = 'finance-app-v1';
+const CACHE_NAME = 'finance-app-v1.1';
 
 // Quando instalado, assume o controle imediatamente
 self.addEventListener('install', (e) => {
